@@ -1,0 +1,697 @@
+/**
+ * Zapcel WHMCS - Estilos do Painel Administrativo
+ * 
+ * @package    Zapcel
+ * @author     Hostcel
+ * @version    2.0.0
+ */
+
+/* Container Principal */
+.zapcel-admin-container {
+    padding: 20px;
+    background: #f8f9fa;
+    min-height: calc(100vh - 200px);
+}
+
+.zapcel-admin-container .header-container {
+    background: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    margin-bottom: 20px;
+}
+
+.zapcel-admin-container .header-container h2 {
+    margin: 0;
+    color: #2c3e50;
+    font-weight: 600;
+}
+
+.zapcel-admin-container .header-container .text-muted {
+    color: #6c757d !important;
+    margin-bottom: 0;
+}
+
+/* Cards e Boxes */
+.zapcel-admin-container .card {
+    border: none;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    margin-bottom: 20px;
+    background: #fff;
+}
+
+.zapcel-admin-container .card-header {
+    background: #fff;
+    border-bottom: 1px solid #e9ecef;
+    padding: 15px 20px;
+    border-radius: 8px 8px 0 0 !important;
+}
+
+.zapcel-admin-container .card-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.zapcel-admin-container .card-body {
+    padding: 20px;
+}
+
+/* Info Boxes */
+.info-box {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    margin-bottom: 20px;
+    display: flex;
+    min-height: 120px;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.info-box:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.info-box-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 80px;
+    font-size: 32px;
+    color: white;
+    border-radius: 8px 0 0 8px;
+}
+
+.info-box-icon.bg-primary { background: linear-gradient(135deg, #007bff, #0056b3); }
+.info-box-icon.bg-success { background: linear-gradient(135deg, #28a745, #1e7e34); }
+.info-box-icon.bg-info { background: linear-gradient(135deg, #17a2b8, #117a8b); }
+.info-box-icon.bg-warning { background: linear-gradient(135deg, #ffc107, #e0a800); }
+.info-box-icon.bg-danger { background: linear-gradient(135deg, #dc3545, #c82333); }
+
+.info-box-content {
+    flex: 1;
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.info-box-text {
+    font-size: 14px;
+    color: #6c757d;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin-bottom: 5px;
+}
+
+.info-box-number {
+    font-size: 24px;
+    font-weight: 700;
+    margin: 5px 0;
+    color: #2c3e50;
+}
+
+.info-box .progress {
+    height: 6px;
+    background: #e9ecef;
+    border-radius: 3px;
+    margin: 8px 0;
+}
+
+.info-box .progress-bar {
+    border-radius: 3px;
+}
+
+.info-box small.text-muted {
+    font-size: 12px;
+    color: #6c757d;
+}
+
+/* Small Box (Dashboard Stats) */
+.small-box {
+    border-radius: 8px;
+    position: relative;
+    display: block;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    color: white !important;
+    overflow: hidden;
+    transition: transform 0.2s ease;
+}
+
+.small-box:hover {
+    transform: translateY(-3px);
+    text-decoration: none;
+    color: white !important;
+}
+
+.small-box > .inner {
+    padding: 20px;
+    position: relative;
+    z-index: 2;
+}
+
+.small-box h3 {
+    font-size: 32px;
+    font-weight: bold;
+    margin: 0 0 10px 0;
+    white-space: nowrap;
+    padding: 0;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
+}
+
+.small-box p {
+    font-size: 14px;
+    margin: 0;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
+}
+
+.small-box .icon {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 1;
+    font-size: 70px;
+    color: rgba(255,255,255,0.3);
+    transition: all 0.3s ease;
+}
+
+.small-box:hover .icon {
+    transform: scale(1.1);
+    color: rgba(255,255,255,0.4);
+}
+
+.small-box.bg-primary { background: linear-gradient(135deg, #007bff, #0056b3); }
+.small-box.bg-success { background: linear-gradient(135deg, #28a745, #1e7e34); }
+.small-box.bg-info { background: linear-gradient(135deg, #17a2b8, #117a8b); }
+.small-box.bg-warning { background: linear-gradient(135deg, #ffc107, #e0a800); }
+
+/* Tabelas */
+.zapcel-admin-container .table {
+    background: #fff;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.zapcel-admin-container .table thead th {
+    background: #f8f9fa;
+    border-bottom: 2px solid #e9ecef;
+    font-weight: 600;
+    color: #2c3e50;
+    padding: 12px 15px;
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+}
+
+.zapcel-admin-container .table tbody td {
+    padding: 12px 15px;
+    vertical-align: middle;
+    border-color: #e9ecef;
+}
+
+.zapcel-admin-container .table tbody tr:hover {
+    background: #f8f9fa;
+}
+
+.zapcel-admin-container .table-striped tbody tr:nth-of-type(odd) {
+    background: #fcfcfc;
+}
+
+.zapcel-admin-container .table-striped tbody tr:nth-of-type(odd):hover {
+    background: #f8f9fa;
+}
+
+/* Badges */
+.zapcel-admin-container .badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.badge.bg-success { background: linear-gradient(135deg, #28a745, #1e7e34) !important; }
+.badge.bg-warning { background: linear-gradient(135deg, #ffc107, #e0a800) !important; }
+.badge.bg-danger { background: linear-gradient(135deg, #dc3545, #c82333) !important; }
+.badge.bg-info { background: linear-gradient(135deg, #17a2b8, #117a8b) !important; }
+.badge.bg-primary { background: linear-gradient(135deg, #007bff, #0056b3) !important; }
+.badge.bg-secondary { background: linear-gradient(135deg, #6c757d, #545b62) !important; }
+
+/* Botões */
+.zapcel-admin-container .btn {
+    border-radius: 6px;
+    font-weight: 500;
+    padding: 8px 16px;
+    border: none;
+    transition: all 0.2s ease;
+}
+
+.zapcel-admin-container .btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+.zapcel-admin-container .btn-group .btn {
+    border-radius: 0;
+}
+
+.zapcel-admin-container .btn-group .btn:first-child {
+    border-radius: 6px 0 0 6px;
+}
+
+.zapcel-admin-container .btn-group .btn:last-child {
+    border-radius: 0 6px 6px 0;
+}
+
+.btn-success { background: linear-gradient(135deg, #28a745, #1e7e34); }
+.btn-primary { background: linear-gradient(135deg, #007bff, #0056b3); }
+.btn-info { background: linear-gradient(135deg, #17a2b8, #117a8b); }
+.btn-warning { background: linear-gradient(135deg, #ffc107, #e0a800); }
+.btn-danger { background: linear-gradient(135deg, #dc3545, #c82333); }
+
+.btn-outline-primary { 
+    border: 2px solid #007bff;
+    color: #007bff;
+    background: transparent;
+}
+
+.btn-outline-primary:hover {
+    background: #007bff;
+    color: white;
+}
+
+/* Formulários */
+.zapcel-admin-container .form-control {
+    border-radius: 6px;
+    border: 1px solid #ced4da;
+    padding: 8px 12px;
+    transition: all 0.2s ease;
+}
+
+.zapcel-admin-container .form-control:focus {
+    border-color: #007bff;
+    box-shadow: 0 0 0 0.2rem rgba(0,123,255,0.25);
+    transform: translateY(-1px);
+}
+
+.zapcel-admin-container .form-group {
+    margin-bottom: 1.5rem;
+}
+
+.zapcel-admin-container .form-label {
+    font-weight: 600;
+    color: #2c3e50;
+    margin-bottom: 8px;
+}
+
+.zapcel-admin-container .form-text {
+    font-size: 12px;
+    color: #6c757d;
+}
+
+/* Alertas */
+.zapcel-admin-container .alert {
+    border: none;
+    border-radius: 8px;
+    padding: 15px 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.alert-success {
+    background: linear-gradient(135deg, #d4edda, #c3e6cb);
+    color: #155724;
+    border-left: 4px solid #28a745;
+}
+
+.alert-danger {
+    background: linear-gradient(135deg, #f8d7da, #f1b0b7);
+    color: #721c24;
+    border-left: 4px solid #dc3545;
+}
+
+.alert-warning {
+    background: linear-gradient(135deg, #fff3cd, #ffeaa7);
+    color: #856404;
+    border-left: 4px solid #ffc107;
+}
+
+.alert-info {
+    background: linear-gradient(135deg, #d1ecf1, #b8e2eb);
+    color: #0c5460;
+    border-left: 4px solid #17a2b8;
+}
+
+/* Modais */
+.modal-content {
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+}
+
+.modal-header {
+    background: #f8f9fa;
+    border-bottom: 1px solid #e9ecef;
+    border-radius: 12px 12px 0 0;
+    padding: 20px;
+}
+
+.modal-header .modal-title {
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.modal-body {
+    padding: 25px;
+}
+
+.modal-footer {
+    background: #f8f9fa;
+    border-top: 1px solid #e9ecef;
+    border-radius: 0 0 12px 12px;
+    padding: 15px 20px;
+}
+
+/* Gráficos */
+.chart-container {
+    position: relative;
+    height: 250px;
+    margin: 10px 0;
+}
+
+/* Paginação */
+.pagination {
+    margin-bottom: 0;
+}
+
+.page-item .page-link {
+    border: none;
+    color: #007bff;
+    padding: 8px 12px;
+    margin: 0 2px;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+}
+
+.page-item.active .page-link {
+    background: linear-gradient(135deg, #007bff, #0056b3);
+    border: none;
+}
+
+.page-item .page-link:hover {
+    background: #e9ecef;
+    color: #0056b3;
+}
+
+/* Gateway Cards */
+.gateway-card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.gateway-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+}
+
+.gateway-status {
+    padding: 15px 0;
+}
+
+/* Preview de Mensagem */
+.message-preview {
+    min-height: 200px;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 15px;
+    background: #f8f9fa;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    line-height: 1.5;
+}
+
+.whatsapp-message {
+    background: #fff;
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+/* Lista de Variáveis */
+.variables-list h6 {
+    margin-top: 15px;
+    margin-bottom: 5px;
+    font-weight: bold;
+    color: #495057;
+}
+
+.variables-list code {
+    background: #e9ecef;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+    color: #e83e8c;
+    font-family: 'Courier New', monospace;
+}
+
+.variables-list ul.list-unstyled li {
+    padding: 3px 0;
+    font-size: 13px;
+    color: #6c757d;
+}
+
+/* Status de Conexão */
+.connection-status {
+    text-align: center;
+    padding: 20px;
+}
+
+.connection-status.connected {
+    color: #28a745;
+}
+
+.connection-status.disconnected {
+    color: #dc3545;
+}
+
+.connection-status h4 {
+    margin: 10px 0;
+    font-weight: 600;
+}
+
+/* Informações da Conta */
+.account-info p {
+    margin-bottom: 8px;
+    font-size: 14px;
+    color: #495057;
+}
+
+.account-info strong {
+    color: #2c3e50;
+}
+
+/* Logs */
+.log-message {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    background: #f8f9fa;
+    padding: 5px;
+    border-radius: 3px;
+    border: 1px solid #e9ecef;
+}
+
+/* Responsividade */
+@media (max-width: 768px) {
+    .zapcel-admin-container {
+        padding: 10px;
+    }
+    
+    .info-box {
+        flex-direction: column;
+        min-height: auto;
+    }
+    
+    .info-box-icon {
+        width: 100%;
+        border-radius: 8px 8px 0 0;
+        height: 60px;
+    }
+    
+    .small-box h3 {
+        font-size: 24px;
+    }
+    
+    .small-box .icon {
+        font-size: 50px;
+    }
+    
+    .btn-group {
+        flex-direction: column;
+    }
+    
+    .btn-group .btn {
+        border-radius: 6px;
+        margin-bottom: 5px;
+    }
+    
+    .btn-group .btn:first-child,
+    .btn-group .btn:last-child {
+        border-radius: 6px;
+    }
+}
+
+/* Animações */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.zapcel-admin-container .card {
+    animation: fadeIn 0.3s ease;
+}
+
+/* Scrollbar Personalizada */
+.zapcel-admin-container ::-webkit-scrollbar {
+    width: 8px;
+}
+
+.zapcel-admin-container ::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+.zapcel-admin-container ::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 4px;
+}
+
+.zapcel-admin-container ::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+
+/* Estados de Loading */
+.loading-state {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.loading-state::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 20px;
+    height: 20px;
+    margin: -10px 0 0 -10px;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #007bff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Tooltips Personalizados */
+.tooltip-inner {
+    background: #2c3e50;
+    border-radius: 4px;
+    font-size: 12px;
+    padding: 6px 10px;
+}
+
+.tooltip.bs-tooltip-top .tooltip-arrow::before {
+    border-top-color: #2c3e50;
+}
+
+/* Destaques */
+.highlight {
+    background: linear-gradient(120deg, #ffd70044, #ffd70044);
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
+.text-whatsapp {
+    color: #25D366 !important;
+}
+
+.bg-whatsapp {
+    background: #25D366 !important;
+}
+
+/* Utilitários */
+.text-ellipsis {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cursor-pointer {
+    cursor: pointer;
+}
+
+.border-radius-8 {
+    border-radius: 8px !important;
+}
+
+.shadow-sm {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+}
+
+.shadow-md {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+}
+
+/* Dark Mode Support */
+@media (prefers-color-scheme: dark) {
+    .zapcel-admin-container {
+        background: #1a1d23;
+        color: #e9ecef;
+    }
+    
+    .zapcel-admin-container .card,
+    .zapcel-admin-container .header-container {
+        background: #2d3035;
+        color: #e9ecef;
+    }
+    
+    .zapcel-admin-container .card-header {
+        background: #2d3035;
+        border-bottom-color: #3a3e45;
+    }
+    
+    .zapcel-admin-container .table {
+        background: #2d3035;
+        color: #e9ecef;
+    }
+    
+    .zapcel-admin-container .table thead th {
+        background: #343a40;
+        color: #e9ecef;
+    }
+    
+    .zapcel-admin-container .table tbody td {
+        border-color: #3a3e45;
+        color: #e9ecef;
+    }
+    
+    .zapcel-admin-container .form-control {
+        background: #2d3035;
+        border-color: #3a3e45;
+        color: #e9ecef;
+    }
+    
+    .zapcel-admin-container .form-control:focus {
+        background: #2d3035;
+        border-color: #007bff;
+        color: #e9ecef;
+    }
+}

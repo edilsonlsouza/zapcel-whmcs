@@ -1,0 +1,17 @@
+{
+    "variaveis": [
+        {
+            "packageid": 35,
+            "fields": [
+                {
+                    "fieldid": 71,
+                    "variable_name": "link_android"
+                },
+                {
+                    "fieldid": 72,
+                    "variable_name": "link_ios"
+                }
+            ]
+        }
+    ]
+}
