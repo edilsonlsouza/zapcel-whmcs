@@ -3,7 +3,7 @@
 ![Versão](https://img.shields.io/badge/versão-2.1.1-blue.svg)
 ![WHMCS](https://img.shields.io/badge/WHMCS-8.0+-green.svg)
 ![PHP](https://img.shields.io/badge/PHP-8.1+-purple.svg)
-![ionCube](https://img.shields.io/badge/ionCube13+-purple.svg)
+![ionCube](https://img.shields.io/badge/ionCube-13+-purple.svg)
 ![Licença](https://img.shields.io/badge/licença-Gratuita-success.svg)
 ![Status](https://img.shields.io/badge/status-Produção-brightgreen.svg)
 
