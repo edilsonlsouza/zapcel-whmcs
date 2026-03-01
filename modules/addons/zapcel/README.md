@@ -1,9 +1,8 @@
 # 📱 Zapcel WHMCS - Módulo de Integração WhatsApp
 
 ![Versão](https://img.shields.io/badge/versão-2.1.1-blue.svg)
-![WHMCS](https://img.shields.io/badge/WHMCS-8.0+-green.svg)
-![PHP](https://img.shields.io/badge/PHP-8.1+-purple.svg)
-![ionCube](https://img.shields.io/badge/ionCube13+-purple.svg)
+![WHMCS](https://img.shields.io/badge/WHMCS-7.0+-green.svg)
+![PHP](https://img.shields.io/badge/PHP-7.4+-purple.svg)
 ![Licença](https://img.shields.io/badge/licença-Gratuita-success.svg)
 ![Status](https://img.shields.io/badge/status-Produção-brightgreen.svg)
 
@@ -540,9 +539,7 @@ Campos personalizados (Custom Fields) do WHMCS podem ser usados nas mensagens at
 ### Sintaxe
 
 ```json
-{"packageid":"ID_DO_PLANO"}
-{"fieldid":"ID_DO_CAMPO"}
-{"variable_name":"cpf_custon"}
+{"customfield":"ID_DO_CAMPO"}
 ```
 
 ### Como Descobrir o ID
@@ -559,12 +556,12 @@ Suponha que você tenha um campo personalizado **"CPF"** com ID **15**:
 ```
 Olá {client_name}!
 
-Seu CPF cadastrado é: {cpf_custon}
+Seu CPF cadastrado é: {"customfield":"15"}
 
 Obrigado!
 ```
 
-O sistema substituirá `{cpf_custon}` pelo valor do CPF do cliente.
+O sistema substituirá `{"customfield":"15"}` pelo valor do CPF do cliente.
 
 ### Tipos Suportados
 

@@ -1,81 +1,194 @@
-<?php //00507
-// 14.0 81
-if(!extension_loaded('ionCube Loader')){$__oc=strtolower(substr(php_uname(),0,3));$__ln='ioncube_loader_'.$__oc.'_'.substr(phpversion(),0,3).(($__oc=='win')?'.dll':'.so');if(function_exists('dl')){@dl($__ln);}if(function_exists('_il_exec')){return _il_exec();}$__ln='/ioncube/'.$__ln;$__oid=$__id=realpath(ini_get('extension_dir'));$__here=dirname(__FILE__);if(strlen($__id)>1&&$__id[1]==':'){$__id=str_replace('\\','/',substr($__id,2));$__here=str_replace('\\','/',substr($__here,2));}$__rd=str_repeat('/..',substr_count($__id,'/')).$__here.'/';$__i=strlen($__rd);while($__i--){if($__rd[$__i]=='/'){$__lp=substr($__rd,0,$__i).$__ln;if(file_exists($__oid.$__lp)){$__ln=$__lp;break;}}}if(function_exists('dl')){@dl($__ln);}}else{die('The file '.__FILE__." is corrupted.\n");}if(function_exists('_il_exec')){return _il_exec();}echo("Site error: the ".(php_sapi_name()=='cli'?'ionCube':'<a href="http://www.ioncube.com">ionCube</a>')." PHP Loader needs to be installed. This is a widely used PHP extension for running ionCube protected PHP code, website security and malware blocking.\n\nPlease visit ".(php_sapi_name()=='cli'?'get-loader.ioncube.com':'<a href="http://get-loader.ioncube.com">get-loader.ioncube.com</a>')." for install assistance.\n\n");exit(199);
+<?php
+/**
+ * CRIAR EM: /modules/addons/zapcel/helpers/GatewayHelper.php
+ */
 
-?>
-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
+namespace WHMCS\Module\Addon\Zapcel\Helpers;
+
+use WHMCS\Database\Capsule;
+
+/**
+ * Helper para gerenciar gateways de pagamento
+ * 
+ * Responsável por:
+ * - Buscar gateway ativo configurado
+ * - Instanciar gateway selecionado
+ * - Extrair dados de PIX/Boleto
+ */
+class GatewayHelper
+{
+    /**
+     * Retorna o nome do gateway ativo configurado
+     * 
+     * @return string|null Nome do gateway ativo (ex: 'iugu') ou null se nenhum
+     */
+    public static function getActiveGateway()
+    {
+        try {
+            $gateway = Capsule::table('tbladdonmodules')
+                ->where('module', 'zapcel')
+                ->where('setting', 'zapcel_active_gateway')
+                ->value('value');
+            
+            // Se for 'none' ou vazio, retorna null
+            if (empty($gateway) || $gateway === 'none') {
+                return null;
+            }
+            
+            return $gateway;
+            
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Retorna a instância do gateway ativo
+     * 
+     * @return object|null Instância do gateway ou null
+     */
+    public static function getActiveGatewayInstance()
+    {
+        $gatewayName = self::getActiveGateway();
+        
+        if (!$gatewayName) {
+            return null;
+        }
+        
+        // Monta o nome da classe (ex: 'iugu' -> 'IuguGateway')
+        $className = ucfirst($gatewayName) . 'Gateway';
+        $fullClassName = "\\WHMCS\\Module\\Addon\\Zapcel\\Gateways\\{$className}";
+        
+        // Verifica se a classe existe
+        if (!class_exists($fullClassName)) {
+            return null;
+        }
+        
+        try {
+            return new $fullClassName();
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Extrai dados de PIX da fatura usando o gateway ativo
+     * 
+     * @param int $invoiceId ID da fatura
+     * @return array|null Array com dados do PIX ou null
+     * 
+     * Retorno esperado:
+     * [
+     *     'qrcode' => 'URL ou base64 da imagem QR Code',
+     *     'copiaecola' => 'Código PIX Copia e Cola',
+     *     'expiration' => 'Data de expiração (opcional)'
+     * ]
+     */
+    public static function extractPixData($invoiceId)
+    {
+        $gateway = self::getActiveGatewayInstance();
+        
+        if (!$gateway) {
+            return null;
+        }
+        
+        try {
+            return $gateway->extractPixData($invoiceId);
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Extrai dados de Boleto da fatura usando o gateway ativo
+     * 
+     * @param int $invoiceId ID da fatura
+     * @return array|null Array com dados do boleto ou null
+     * 
+     * Retorno esperado:
+     * [
+     *     'linha_digitavel' => 'Linha digitável do boleto',
+     *     'pdf_url' => 'URL do PDF do boleto',
+     *     'barcode' => 'Código de barras (opcional)',
+     *     'expiration' => 'Data de vencimento (opcional)'
+     * ]
+     */
+    public static function extractBoletoData($invoiceId)
+    {
+        $gateway = self::getActiveGatewayInstance();
+        
+        if (!$gateway) {
+            return null;
+        }
+        
+        try {
+            return $gateway->extractBoletoData($invoiceId);
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Verifica se há um gateway ativo configurado
+     * 
+     * @return bool True se há gateway ativo, false caso contrário
+     */
+    public static function hasActiveGateway()
+    {
+        return self::getActiveGateway() !== null;
+    }
+    
+    /**
+     * Mapeia dados do gateway para variáveis de template
+     * 
+     * Converte os dados retornados pelo gateway para as variáveis
+     * usadas nos templates do Zapcel
+     * 
+     * @param int $invoiceId ID da fatura
+     * @return array Array com variáveis mapeadas
+     */
+    public static function getTemplateVariables($invoiceId)
+    {
+        $variables = [
+            'codigopix' => '',
+            'qr_code_url' => '',
+            'linhadigitavel' => '',
+            'link_fatura' => '',
+        ];
+        
+        // Extrai dados do PIX
+        $pixData = self::extractPixData($invoiceId);
+        if ($pixData) {
+            $variables['codigopix'] = $pixData['copiaecola'] ?? '';
+            $variables['qr_code_url'] = $pixData['qrcode'] ?? '';
+        }
+        
+        // Extrai dados do Boleto
+        $boletoData = self::extractBoletoData($invoiceId);
+        if ($boletoData) {
+            $variables['linhadigitavel'] = $boletoData['linha_digitavel'] ?? '';
+            $variables['link_fatura'] = $boletoData['pdf_url'] ?? '';
+        }
+        
+        return $variables;
+    }
+    
+    /**
+     * Substitui variáveis de gateway no template
+     * 
+     * @param string $template Template com variáveis
+     * @param int $invoiceId ID da fatura
+     * @return string Template com variáveis substituídas
+     */
+    public static function replaceTemplateVariables($template, $invoiceId)
+    {
+        $variables = self::getTemplateVariables($invoiceId);
+        
+        foreach ($variables as $key => $value) {
+            $template = str_replace('{' . $key . '}', $value, $template);
+        }
+        
+        return $template;
+    }
+}
+
