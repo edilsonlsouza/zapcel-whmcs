@@ -1,7849 +1,3971 @@
-<?php
-namespace WHMCS\Module\Addon\Zapcel\Admin;
-
-use function \zapcel_trans;
-
-/**
- * Zapcel WHMCS - Painel Administrativo
- * Interface moderna e profissional para gerenciamento do módulo
- * 
- * @package    Zapcel
- * @author     Hostcel
- * @version    2.0.0
- */
-
-// Bloqueia acesso direto
-if (!defined('WHMCS')) {
-    die(zapcel_trans('access_denied'));
-}
-
-use WHMCS\Database\Capsule;
-use WHMCS\Module\Addon\Zapcel\Api\StatisticsManager;
-use WHMCS\Module\Addon\Zapcel\Api\WhatsAppAPI;
-
-// CARREGA AS CLASSES NECESSÁRIAS
-require_once __DIR__ . '/../api/StatisticsManager.php';
-require_once __DIR__ . '/../api/WhatsAppAPI.php';
-require_once __DIR__ . '/../api/NumberValidator.php';
-
-// ✅ ENDPOINT UNIFICADO: Enviar mensagens (lembrete de fatura OU mensagem personalizada)
-if (isset($_POST['admin_request']) && $_POST['admin_request'] === 'true') {
-    header('Content-Type: application/json');
-    
-    try {
-        // CASO 1: Lembrete de Fatura Manual (invoice_id presente)
-        if (isset($_POST['invoice_id'])) {
-            $invoiceId = (int)($_POST['invoice_id'] ?? 0);
-            
-            if (!$invoiceId) {
-                echo json_encode([
-                    'success' => false,
-                    'error' => zapcel_trans('invalid_id') // Usando 'ID inválido' para fatura
-                ]);
-                exit;
-            }
-            
-            // ✅ Dispara hook InvoicePaymentReminder
-            run_hook('InvoicePaymentReminder', ['invoiceid' => $invoiceId]);
-            
-            echo json_encode([
-                'success' => true,
-                'message' => zapcel_trans('reminder_sent_successfully_to') // Adaptando de 'Lembrete enviado com sucesso para'
-            ]);
-            exit;
-        }
-        
-        // CASO 2: Mensagem Personalizada ao Cliente (message presente)
-        if (isset($_POST['message'])) {
-            $clientId = (int)($_POST['client_id'] ?? 0);
-            $message = trim($_POST['message'] ?? '');
-            $quickReply = trim($_POST['quick_reply'] ?? ''); 
-            
-            if (!$clientId || !$message) {
-                echo json_encode([
-                    'success' => false,
-                    'error' => zapcel_trans('invalid_client') // Usando 'Cliente inválido' para o caso de ID ou mensagem inválida
-                ]);
-                exit;
-            }
-            
-            // ✅ Dispara hook SendCustomMessage
-            run_hook('SendCustomMessage', [
-                'clientid' => $clientId,
-                'message' => $message,
-                'quick_reply' => $quickReply 
-            ]);
-            
-            echo json_encode([
-                'success' => true,
-                'message' => zapcel_trans('message_sent_successfully') // Usando 'Mensagem enviada com sucesso!'
-            ]);
-            exit;
-        }
-        
-        // Nenhum caso válido
-        echo json_encode([
-            'success' => false,
-            'error' => zapcel_trans('unrecognized_action') // Usando 'Ação não reconhecida'
-        ]);
-        exit;
-        
-    } catch (Exception $e) {
-        echo json_encode([
-            'success' => false,
-            // Mantendo a concatenação da exceção para debug, mas internacionalizando o prefixo.
-            'error' => zapcel_trans('exception') . ': ' . $e->getMessage() 
-        ]);
-        exit;
-    }
-}
-
-// CARREGA IDIOMA DINÂMICO
-$languageSetting = Capsule::table('tbladdonmodules')
-    ->where('module', 'zapcel')
-    ->where('setting', 'language')
-    ->value('value') ?? 'portuguese';
-
-$langFile = $languageSetting === 'english' 
-    ? __DIR__ . '/../langs/en.php' 
-    : __DIR__ . '/../langs/pt.php';
-
-$LANG = include $langFile;
-
-/**
- * Dispatcher do painel administrativo
- */
-class AdminDispatcher
-{
-    private $vars;
-    private $statsManager;
-    private $whatsappAPI;
-    private $LANG;
-
-    public function __construct($vars)
-    {
-        $this->vars = $vars;
-        
-        // Carrega idioma
-        global $LANG;
-        $this->LANG = $LANG;
-        
-        // Se for requisição AJAX, não carrega configurações ainda
-        // (serão carregadas sob demanda se necessário)
-        $action = $_REQUEST['action'] ?? '';
-        if ($action === 'ajax') {
-            $this->statsManager = null;
-            $this->whatsappAPI = null;
-            return;
-        }
-        
-        try {
-            $this->statsManager = new StatisticsManager();
-            $this->whatsappAPI = new WhatsAppAPI($this->getSettings());
-        } catch (\Exception $e) {
-            // Se der erro ao carregar classes, cria objetos vazios
-            $this->statsManager = null;
-            $this->whatsappAPI = null;
-        }
-    }
-
-    /**
-     * Obtém configurações do módulo
-     */
-    private function getSettings()
-    {
-        return Capsule::table('tbladdonmodules')
-            ->where('module', 'zapcel')
-            ->pluck('value', 'setting')
-            ->toArray();
-    }
-
-    /**
-     * Dispatch principal para rotas do admin
-     */
-    public function dispatch($action)
-    {
-        // Se for AJAX, não adiciona CSS nem HTML
-        if ($action === 'ajax') {
-            if (ob_get_level()) ob_end_clean();
-            header('Content-Type: application/json');
-            echo $this->handleAjax();
-            exit;
-        }
-        
-        // Adiciona CSS personalizado para organizar a interface
-        echo $this->getCustomCSS();
-        
-        switch ($action) {
-            case 'templates':
-                return $this->templatesPage();
-                
-            case 'edit_template':
-                return $this->editTemplatePage();
-                
-            case 'statistics':
-                return $this->statisticsPage();
-                
-            case 'validation':
-                return $this->validationPage();
-                
-            case 'gateways':
-                return $this->gatewaysPage();
-                
-            case 'campaigns':
-                return $this->campaignsPage();
-                break;
-                
-            case 'logs':
-                return $this->logsPage();
-                
-            case 'settings':
-                return $this->settingsPage();
-                
-            case 'test_message':
-                return $this->testMessagePage();
-
-            case 'autologin':
-                return $this->autologinPage();
-
-            case 'dashboard':
-            default:
-                return $this->dashboardPage();
-        }
-    }
-
-    /**
-     * CSS personalizado para organizar a interface
-     */
-    private function getCustomCSS()
-    {
-        return '
-        <meta charset="UTF-8">
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
-        <style>
-        .zapcel-admin-container {
-            padding: 20px;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-        }
-        
-        .header-container {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 30px;
-            border-left: 4px solid #28a745;
-        }
-        
-        .header-container h2 {
-            color: #2c3e50;
-            margin: 0;
-            font-weight: 600;
-        }
-        
-        .header-container .text-muted {
-            color: #6c757d !important;
-            margin: 5px 0 0 0;
-        }
-        
-        /* Cards de estatísticas melhorados */
-        .info-box {
-            background: #fff;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border: 1px solid #e3e6f0;
-            box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
-            transition: all 0.3s;
-        }
-        
-        .info-box:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 0.5rem 2rem 0 rgba(58, 59, 69, 0.2);
-        }
-        
-        .info-box-icon {
-            float: left;
-            height: 70px;
-            width: 70px;
-            text-align: center;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-right: 15px;
-        }
-        
-        .info-box-icon i {
-            font-size: 24px;
-            color: white;
-        }
-        
-        .info-box-content {
-            margin-left: 85px;
-        }
-        
-        .info-box-text {
-            font-size: 14px;
-            color: #6c757d;
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-        
-        .info-box-number {
-            font-size: 24px;
-            font-weight: 700;
-            color: #2c3e50;
-            margin: 5px 0;
-        }
-        
-        /* Tabelas organizadas */
-        .table-responsive {
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        
-        .table {
-            background: white;
-            border-radius: 8px;
-        }
-        
-        .table th {
-            background: #f8f9fa;
-            border-bottom: 2px solid #e3e6f0;
-            font-weight: 600;
-            color: #2c3e50;
-            padding: 12px 15px;
-        }
-        
-        .table td {
-            padding: 12px 15px;
-            vertical-align: middle;
-            border-color: #e3e6f0;
-        }
-        
-        /* Badges melhorados */
-        .badge {
-            font-size: 11px;
-            font-weight: 600;
-            padding: 5px 10px;
-            border-radius: 4px;
-        }
-        
-        /* Cards modernos */
-        .card {
-            border: none;
-            border-radius: 8px;
-            box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
-            margin-bottom: 25px;
-        }
-        
-        .card-header {
-            background: white;
-            border-bottom: 1px solid #e3e6f0;
-            padding: 15px 20px;
-            border-radius: 8px 8px 0 0 !important;
-        }
-        
-        .card-header h3 {
-            margin: 0;
-            color: #2c3e50;
-            font-weight: 600;
-            font-size: 18px;
-        }
-        
-        .card-body {
-            padding: 20px;
-        }
-        
-        /* Botões organizados */
-        .btn-group .btn {
-            margin-right: 5px;
-            border-radius: 4px;
-        }
-        
-        .btn-group .btn:last-child {
-            margin-right: 0;
-        }
-        
-        /* Formulários organizados */
-        #settingsForm .form-group {
-            margin-bottom: 20px;
-        }
-
-        #settingsForm .form-control {
-            border-radius: 4px;
-            border: 1px solid #d1d3e2;
-            padding: 11px 12px;
-            min-height: 42px;
-            width: 100%; /* Boa prática para inputs */
-            box-sizing: border-box; /* Importante! */
-        }
-
-        /* Apenas para selects dentro do form */
-        #settingsForm select.form-control {
-            /* height: 42px; */ /* Removido - melhor usar padding/min-height */
-            appearance: menulist; /* Mantém aparência nativa do select */
-        }
-
-        #settingsForm .form-control:focus {
-            border-color: #80bdff;
-            box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
-            outline: none; /* Remove outline padrão do browser */
-        }
-        
-        /* Small boxes para estatísticas */
-        .small-box {
-            border-radius: 8px;
-            position: relative;
-            margin-bottom: 20px;
-            box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
-        }
-        
-        .small-box .inner {
-            padding: 20px;
-            color: white;
-        }
-        
-        .small-box h3 {
-            font-size: 2.2rem;
-            font-weight: 700;
-            margin: 0 0 10px 0;
-            color: white;
-        }
-        
-        .small-box p {
-            font-size: 14px;
-            margin: 0;
-            opacity: 0.9;
-        }
-        
-        .small-box .icon {
-            position: absolute;
-            top: 15px;
-            right: 15px;
-            font-size: 70px;
-            opacity: 0.3;
-            transition: all 0.3s;
-        }
-        
-        .small-box:hover .icon {
-            transform: scale(1.1);
-        }
-        
-        /* Cores dos boxes */
-        .bg-primary { background: linear-gradient(45deg, #4e73df, #2e59d9) !important; }
-        .bg-success { background: linear-gradient(45deg, #1cc88a, #17a673) !important; }
-        .bg-info { background: linear-gradient(45deg, #36b9cc, #258391) !important; }
-        .bg-warning { background: linear-gradient(45deg, #f6c23e, #dda20a) !important; }
-        
-        /* List groups organizados */
-        .list-group-item {
-            border: 1px solid #e3e6f0;
-            padding: 12px 15px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        
-        .list-group-item i {
-            margin-right: 8px;
-            width: 16px;
-        }
-        
-        /* Grid system melhorado */
-        .row {
-            margin-left: -10px;
-            margin-right: -10px;
-        }
-        
-        .row > [class*="col-"] {
-            padding-left: 10px;
-            padding-right: 10px;
-        }
-        
-        /* Modal melhorado */
-        .modal-content {
-            border: none;
-            border-radius: 8px;
-            box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.175);
-        }
-        
-        .modal-header {
-            background: #f8f9fa;
-            border-bottom: 1px solid #e3e6f0;
-            border-radius: 8px 8px 0 0;
-            padding: 15px 20px;
-        }
-        
-        .modal-body {
-            padding: 20px;
-        }
-        
-        /* Responsividade */
-        @media (max-width: 768px) {
-            .header-container .text-right {
-                text-align: left !important;
-                margin-top: 15px;
-            }
-            
-            .info-box-icon {
-                float: none;
-                margin: 0 auto 15px auto;
-            }
-            
-            .info-box-content {
-                margin-left: 0;
-                text-align: center;
-            }
-        }
-        </style>
-        ';
-    }
-
-    /**
-     * Página inicial - Dashboard (CORRIGIDA)
-     */
-    private function dashboardPage()
-    {
-        try {
-            // Estatísticas básicas - CORREÇÃO v2.0.1: Baseado em usage_count dos templates
-            $totalMessages = Capsule::table('mod_zapcel_templates')
-                ->sum('usage_count');
-
-            // Para cálculo da taxa de sucesso, usamos APENAS os logs (mensagens realmente enviadas)
-            $logsForStats = Capsule::table('mod_zapcel_logs')
-                ->where(function($query) {
-                    $query->where('event_type', 'NOT LIKE', 'debug_%')
-                        ->where('event_type', '!=', 'gateway_manager_debug')
-                        ->where('event_type', '!=', 'system_log')
-                        ->where('message', 'NOT LIKE', '[DEBUG]%');
-                })
-                ->whereIn('success', [0, 1]);
-                        
-            $successfulMessages = (clone $logsForStats)->where('success', 1)->count();
-            $failedMessages = (clone $logsForStats)->where('success', 0)->count();
-            $totalLoggedMessages = $logsForStats->count();
-                        
-            // Taxa de sucesso baseada APENAS nos logs (mensagens enviadas)
-            $successRate = $totalLoggedMessages > 0 ? round(($successfulMessages / $totalLoggedMessages) * 100, 2) : 0;
-                        
-            $activeTemplates = Capsule::table('mod_zapcel_templates')->where('active', 1)->count();
-            $totalTemplates = Capsule::table('mod_zapcel_templates')->count();
-            $validatedClients = Capsule::table('mod_zapcel_validation')->where('validated', true)->count();
-
-            // OBTÉM STATUS DO DEBUG LOGGING
-            $debugSettings = Capsule::table('tbladdonmodules')
-                ->where('module', 'zapcel')
-                ->where('setting', 'enable_logging')
-                ->first();
-            $isDebugEnabled = ($debugSettings && $debugSettings->value == '1');
-                        
-            // Mensagens de hoje - CORREÇÃO v2.0.1: Filtra logs de debug
-            $todayMessages = Capsule::table('mod_zapcel_logs')
-                ->whereDate('created_at', date('Y-m-d'))
-                ->where(function($query) {
-                    $query->where('event_type', 'NOT LIKE', 'debug_%')
-                        ->where('event_type', '!=', 'gateway_manager_debug')
-                        ->where('event_type', '!=', 'system_log')
-                        ->where('message', 'NOT LIKE', '[DEBUG]%');
-                })
-                ->whereIn('success', [0, 1])
-                ->count();
-
-            // Últimas 10 mensagens (APENAS UMA CONSULTA) - FILTRANDO DEBUGS
-            $recentMessages = Capsule::table('mod_zapcel_logs as l')
-                ->leftJoin('tblclients as c', 'l.client_id', '=', 'c.id')
-                ->select('l.*', 'c.firstname', 'c.lastname')
-                ->where(function($query) {
-                    $query->where('l.event_type', 'NOT LIKE', 'debug_%')
-                        ->where('l.event_type', '!=', 'gateway_manager_debug')
-                        ->where('l.event_type', '!=', 'system_log')
-                        ->where('l.message', 'NOT LIKE', '[DEBUG]%');
-                })
-                ->orderBy('l.created_at', 'desc')
-                ->limit(10)
-                ->get();
-
-            } catch (\Exception $e) {
-                // Fallback em caso de erro
-                $totalMessages = $successfulMessages = $failedMessages = $todayMessages = 0;
-                $successRate = 0;
-                $activeTemplates = $totalTemplates = $validatedClients = 0;
-                $recentMessages = [];
-            }
-
-        ob_start();
-        ?>
-        <div class="zapcel-admin-container">
-            <!-- CABEÇALHO ÚNICO -->
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fab fa-whatsapp text-success"></i> 
-                            <?php echo $this->LANG['dashboard_title']; ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['dashboard_subtitle']; ?></p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <div class="btn-group">
-                            <a href="addonmodules.php?module=zapcel&action=test_message" class="btn btn-success">
-                                <i class="fas fa-paper-plane"></i> <?php echo $this->LANG['test_message']; ?>
-                            </a>
-                            <a href="addonmodules.php?module=zapcel&action=settings" class="btn btn-outline-secondary">
-                                <i class="fas fa-cog"></i> <?php echo $this->LANG['settings']; ?>
-                            </a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- CARDS DE ESTATÍSTICAS - APENAS UMA VEZ -->
-            <div class="row">
-                <!-- Total de Mensagens -->
-                <div class="col-xl-3 col-md-6">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-primary">
-                            <i class="fas fa-envelope"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['total_messages']; ?></span>
-                            <span class="info-box-number"><?= number_format($totalMessages) ?></span>
-                            <div class="progress mt-2" style="height: 6px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-primary" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block"><?php echo $this->LANG['today']; ?>: <?= number_format($todayMessages) ?></small>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Taxa de Sucesso -->
-                <div class="col-xl-3 col-md-6">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-<?= $successRate >= 90 ? 'success' : ($successRate >= 80 ? 'warning' : 'danger') ?>">
-                            <i class="fas fa-chart-line"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['success_rate']; ?></span>
-                            <span class="info-box-number"><?= $successRate ?>%</span>
-                            <div class="progress mt-2" style="height: 6px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-<?= $successRate >= 90 ? 'success' : ($successRate >= 80 ? 'warning' : 'danger') ?>" style="width: <?= $successRate ?>%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?php echo $this->LANG['successful_messages']; ?>: <?= number_format($successfulMessages) ?> | 
-                                <?php echo $this->LANG['failed_messages']; ?>: <?= number_format($failedMessages) ?>
-                            </small>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Templates Ativos -->
-                <div class="col-xl-3 col-md-6">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-info">
-                            <i class="fas fa-file-alt"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['templates']; ?></span>
-                            <span class="info-box-number"><?= $activeTemplates ?>/<?= $totalTemplates ?></span>
-                            <div class="progress mt-2" style="height: 6px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-info" 
-                                     style="width: <?= $totalTemplates > 0 ? ($activeTemplates / $totalTemplates) * 100 : 0 ?>%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block"><?= $activeTemplates ?> <?php echo $this->LANG['active_templates']; ?></small>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Clientes Validados -->
-                <div class="col-xl-3 col-md-6">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-success">
-                            <i class="fas fa-users"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['whatsapp_validated']; ?></span>
-                            <span class="info-box-number"><?= number_format($validatedClients) ?></span>
-                            <div class="progress mt-2" style="height: 6px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-success" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block"><?php echo $this->LANG['clients_with_whatsapp_verified']; ?></small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="row mt-4">
-                <div class="col-lg-8">
-                    <!-- ÚLTIMAS MENSAGENS - APENAS UMA VEZ -->
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title">
-                                <i class="fas fa-history mr-2"></i>
-                                <?php echo $this->LANG['recent_messages']; ?>
-                            </h3>
-                        </div>
-                        <div class="card-body">
-                            <?php if (count($recentMessages) > 0): ?>
-                                <div class="table-responsive">
-                                    <table class="table table-hover">
-                                        <thead>
-                                            <tr>
-                                                <th><?php echo $this->LANG['client']; ?></th>
-                                                <th><?php echo $this->LANG['event']; ?></th>
-                                                <th><?php echo $this->LANG['status']; ?></th>
-                                                <th><?php echo $this->LANG['date']; ?></th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            <?php foreach ($recentMessages as $message): ?>
-                                            <tr>
-                                                <td>
-                                                    <?php if ($message->client_id): ?>
-                                                        <strong><a style="text-decoration: none;" href="clientssummary.php?userid=<?= $message->client_id ?>" target="_blank" title="<?= htmlspecialchars($message->firstname . ' ' . $message->lastname) ?>"><?= htmlspecialchars($message->firstname) ?> <?= htmlspecialchars($message->lastname) ?></strong>
-                                                </a>
-                                                    <?php else: ?>
-                                                        <span class="text-muted"><?php echo $this->LANG['system']; ?></span>
-                                                    <?php endif; ?>
-                                                </td>
-                                                <td>
-                                                    <small class="text-muted"><?= $this->getEventTypeDisplayName($message->event_type) ?></small>
-                                                </td>
-                                                <td>
-                                                    <?php if ($message->success): ?>
-                                                        <span class="badge bg-success"><?php echo $this->LANG['success']; ?></span>
-                                                    <?php else: ?>
-                                                        <span class="badge bg-danger"><?php echo $this->LANG['error']; ?></span>
-                                                    <?php endif; ?>
-                                                </td>
-                                                <td>
-                                                    <small class="text-muted">
-                                                        <?= date('d/m/Y H:i', strtotime($message->created_at)) ?>
-                                                    </small>
-                                                </td>
-                                            </tr>
-                                            <?php endforeach; ?>
-                                        </tbody>
-                                    </table>
-                                </div>
-                            <?php else: ?>
-                                <div class="text-center py-4">
-                                    <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
-                                    <p class="text-muted"><?php echo $this->LANG['no_messages_sent']; ?></p>
-                                </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-lg-4">
-                    <!-- STATUS DO SISTEMA - APENAS UMA VEZ -->
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title">
-                                <i class="fas fa-heartbeat mr-2"></i>
-                                <?php echo $this->LANG['system_status']; ?>
-                            </h3>
-                        </div>
-                        <div class="card-body p-0">
-                            <div class="list-group list-group-flush">
-                                <div class="list-group-item d-flex justify-content-between align-items-center">
-                                    <div>
-                                        <i class="fas fa-database text-primary mr-2"></i>
-                                        <strong><?php echo $this->LANG['database']; ?></strong>
-                                    </div>
-                                    <span class="badge bg-success">
-                                        <i class="fas fa-check-circle"></i> OK
-                                    </span>
-                                </div>
-                                <div class="list-group-item d-flex justify-content-between align-items-center">
-                                    <div>
-                                        <i class="fab fa-whatsapp text-success mr-2"></i>
-                                        <strong><?php echo $this->LANG['whatsapp_api']; ?></strong>
-                                    </div>
-                                    <?php
-                                    $apiStatus = $this->testAPIConnection();
-                                    if ($apiStatus['success']) {
-                                        echo '<span class="badge bg-success"><i class="fas fa-check-circle"></i> ' . $this->LANG['connected'] . '</span>';
-                                    } else {
-                                        echo '<span class="badge bg-danger" style="background-color: #FF0000"><i class="fas fa-times-circle"></i> ' . $this->LANG['disconnected'] . '</span>';
-                                    }
-                                    ?>
-                                </div>
-                                <div class="list-group-item d-flex justify-content-between align-items-center">
-                                    <div>
-                                        <i class="fas fa-plug text-info mr-2"></i>
-                                        <strong><?php echo $this->LANG['active_hooks']; ?></strong>
-                                    </div>
-                                    <span class="badge bg-primary"><?= $totalTemplates ?></span>
-                                </div>
-                                <!-- NOVO ITEM: STATUS DO DEBUG LOGGING -->
-                                <div class="list-group-item d-flex justify-content-between align-items-center">
-                                    <div>
-                                        <i class="fas fa-bug text-<?= $isDebugEnabled ? 'warning' : 'secondary' ?> mr-2"></i>
-                                        <strong>
-                                            <?php echo $this->LANG['debug_logging']; ?>
-                                            <i class="fas fa-info-circle text-muted ml-1" 
-                                            data-toggle="tooltip" 
-                                            title="<?php echo $this->LANG['debug_logging_tooltip']; ?>"></i>
-                                        </strong>
-                                    </div>
-                                    <?php if ($isDebugEnabled): ?>
-                                        <span class="badge bg-warning" data-toggle="tooltip" title="<?php echo $this->LANG['debug_enabled_tooltip']; ?>">
-                                            <i class="fas fa-toggle-on"></i> <?php echo $this->LANG['enabled']; ?>
-                                        </span>
-                                    <?php else: ?>
-                                        <span class="badge bg-secondary" data-toggle="tooltip" title="<?php echo $this->LANG['debug_disabled_tooltip']; ?>">
-                                            <i class="fas fa-toggle-off"></i> <?php echo $this->LANG['disabled']; ?>
-                                        </span>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- AÇÕES RÁPIDAS - APENAS UMA VEZ -->
-                    <div class="card mt-4">
-                        <div class="card-header">
-                            <h3 class="card-title">
-                                <i class="fas fa-bolt mr-2"></i>
-                                <?php echo $this->LANG['quick_actions']; ?>
-                            </h3>
-                        </div>
-                        <div class="card-body">
-                            <div class="d-grid gap-2" style="gap: 8px;">
-                                <a href="addonmodules.php?module=zapcel&action=templates" class="btn btn-outline-primary text-left" style="padding: 6px 10px;">
-                                    <i class="fas fa-file-alt mr-2"></i> <?php echo $this->LANG['manage_templates']; ?>
-                                </a>
-                                <a href="addonmodules.php?module=zapcel&action=gateways" class="btn btn-outline-primary text-left" style="padding: 6px 10px;">
-                                    <i class="fas fa-exchange-alt mr-2"></i> <?php echo $this->LANG['manage_gateways']; ?>
-                                </a>
-                                <a href="addonmodules.php?module=zapcel&action=validation" class="btn btn-outline-warning text-left" style="padding: 6px 10px;">
-                                    <i class="fas fa-mobile-alt mr-2"></i> <?php echo $this->LANG['validations']; ?>
-                                </a>
-                                <a href="addonmodules.php?module=zapcel&action=logs" class="btn btn-outline-secondary text-left" style="padding: 6px 10px;">
-                                    <i class="fas fa-list-alt mr-2"></i> <?php echo $this->LANG['view_logs']; ?>
-                                </a>
-                                <a href="addonmodules.php?module=zapcel&action=autologin" class="btn btn-outline-secondary text-left" style="padding: 6px 10px;">
-                                    <i class="fas fa-key"></i> AutoLogin
-                                </a>
-                                <a class="nav-link <?php echo $this->action === 'campaigns' ? 'active' : ''; ?>" href="addonmodules.php?module=zapcel&action=campaigns">
-                                    <i class="fas fa-bullhorn mr-2"></i> <?php echo $this->LANG['menu_campaigns'] ?? 'Campanhas'; ?>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <script>
-            $(document).ready(function(){
-                $('[data-toggle="tooltip"]').tooltip();
-            });
-        </script>
-        <?php
-        return ob_get_clean();
-    }
-    
-    /**
-     * Página de Gerenciamento de Templates
-     */
-    private function templatesPage()
-    {
-        $templates = Capsule::table('mod_zapcel_templates')
-            ->orderBy('name', 'asc')
-            ->get();
-        
-        // Busca próximo número de resposta rápida disponível
-        $lastQuickReply = Capsule::table('mod_zapcel_templates')
-            ->where('trigger_event', 'LIKE', 'quick_reply%')
-            ->orderBy('trigger_event', 'desc')
-            ->value('trigger_event');
-
-        if ($lastQuickReply) {
-            // Extrai número: quick_reply_5 → 5
-            preg_match('/quick_reply_(\d+)/', $lastQuickReply, $matches);
-            $nextQuickReplyNumber = isset($matches[1]) ? (int)$matches[1] + 1 : 1;
-        } else {
-            $nextQuickReplyNumber = 1;
-        }
-
-        $nextQuickReplyEvent = 'quick_reply_' . $nextQuickReplyNumber;
-        
-        ob_start();
-        ?>
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fas fa-file-alt mr-2"></i> 
-                            <?php echo $this->LANG['manage_message_templates']; ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['templates_subtitle']; ?></p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <a href="addonmodules.php?module=zapcel&action=dashboard" class="btn btn-outline-secondary mr-2">
-                            <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back']; ?>
-                        </a>
-                        <button class="btn btn-success" data-toggle="modal" data-target="#newTemplateModal">
-                            <i class="fas fa-plus mr-1"></i> <?php echo $this->LANG['new_template']; ?>
-                        </button>
-                    </div>
-                </div>
-            </div>
-    
-            <div class="row">
-                <div class="col-12">
-                    <div class="card">
-                        <!-- Filtros de Templates -->
-                        <div class="row mb-3">
-                            <div class="col-md-6">
-                                <div class="btn-group" role="group">
-                                    <button type="button" class="btn btn-primary filter-templates active" data-filter="all">
-                                        <i class="fas fa-list"></i> <?php zapcel_trans('all'); ?> (<?= $templates->count() ?>)
-                                    </button>
-                                    <button type="button" class="btn btn-outline-secondary filter-templates" data-filter="events">
-                                        <i class="fas fa-bolt"></i> <?php zapcel_trans('events'); ?>
-                                    </button>
-                                    <button type="button" class="btn btn-outline-warning filter-templates" data-filter="quick_reply">
-                                        <i class="fas fa-comments"></i> <?php zapcel_trans('quick_reply_badge'); ?>
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="card-body">
-                            <?php if ($templates->count() > 0): ?>
-                            <div class="table-responsive">
-                                <table class="table table-striped table-hover" id="templatesTable">
-                                    <thead>
-                                        <tr>
-                                            <th><?php echo $this->LANG['template_name']; ?></th>
-                                            <th width="100">Tipo</th>
-                                            <th><?php echo $this->LANG['trigger_event']; ?></th>
-                                            <th><?php echo $this->LANG['status']; ?></th>
-                                            <th><?php echo $this->LANG['usage']; ?></th>
-                                            <th><?php echo $this->LANG['last_update']; ?></th>
-                                            <th width="150" class="text-center"><?php echo $this->LANG['actions']; ?></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($templates as $template): ?>
-                                        <tr>
-                                            <td>
-                                                <strong><?= htmlspecialchars($template->name) ?></strong>
-                                            </td>
-                                            <td>
-                                                <?php
-                                                $isQuickReply = strpos($template->trigger_event, 'quick_reply') === 0;
-                                                if ($isQuickReply) {
-                                                    echo '<span class="badge bg-warning" style="font-size: 11px;">' . zapcel_trans('quick_reply_badge') . '</span>';
-                                                } else {
-                                                    echo '<span class="badge bg-info" style="font-size: 11px;">Evento</span>';
-                                                }
-                                                ?>
-                                            </td>
-                                            <td>
-                                                <?php
-                                                // Detecta se é resposta rápida
-                                                $isQuickReply = strpos($template->trigger_event, 'quick_reply') === 0;
-                                                
-                                                if ($isQuickReply) {
-                                                    // Extrai número: quick_reply_5 → #5
-                                                    preg_match('/quick_reply_(\d+)/', $template->trigger_event, $matches);
-                                                    $number = isset($matches[1]) ? '#' . $matches[1] : '';
-                                                    echo '<span class="badge bg-warning" style="font-size: 12px;">⚡ ' . zapcel_trans('quick_reply_badge') . ' ' . $number . '</span>';
-                                                } else {
-                                                    $eventLabels = [
-                                                        'invoice_created' => '📋 ' . zapcel_trans('invoice_created'),
-                                                        'invoice_paid' => '✅ ' . zapcel_trans('invoice_paid'),
-                                                        'invoice_cancelled' => '❌ ' . zapcel_trans('invoice_cancelled'),
-                                                        'invoice_reminder' => '🔔 ' . zapcel_trans('invoice_reminder'),
-                                                        'invoice_reminder_1' => '🔔 ' . zapcel_trans('invoice_reminder_1'),
-                                                        'invoice_reminder_2' => '🔔 ' . zapcel_trans('invoice_reminder_2'),
-                                                        'invoice_reminder_3' => '🔔 ' . zapcel_trans('invoice_reminder_3'),
-                                                        'ticket_opened' => '🎫 ' . zapcel_trans('ticket_opened'),
-                                                        'ticket_reply' => '💬 ' . zapcel_trans('ticket_reply'),
-                                                        'service_activated' => '✅ ' . zapcel_trans('service_activated'),
-                                                        'service_suspended' => '⏸️ ' . zapcel_trans('service_suspended'),
-                                                        'service_unsuspended' => '▶️ ' . zapcel_trans('service_unsuspended'),
-                                                        'service_terminated' => '🚫 ' . zapcel_trans('service_terminated'),
-                                                        'cancellation_request' => '📝 ' . zapcel_trans('cancellation_request'),
-                                                        'client_added' => '👤 ' . zapcel_trans('client_added'),
-                                                        'client_edited' => '✏️ ' . zapcel_trans('client_edited'),
-                                                        'password_changed' => '🔑 ' . zapcel_trans('password_changed'),
-                                                        'quote_created' => '💰 ' . zapcel_trans('quote_created'),
-                                                        'quote_modified' => '📝 ' . zapcel_trans('quote_modified'),
-                                                        'quote_accepted' => '✅ ' . zapcel_trans('quote_accepted'),
-                                                        'whatsapp_validation' => '📱 ' . zapcel_trans('whatsapp_validation'),
-                                                        'email_presend' => '📧 ' . zapcel_trans('email_presend'),
-                                                        'test_message' => '📋 ' . zapcel_trans('test_message_event'), // Usando 'test_message_event' dos logs, pois 'test_message' é uma tag de tela
-                                                        'custom_message_manual' => '📋 ' . zapcel_trans('custom_message_log'), // Usando 'custom_message_log' do log
-                                                        
-                                                        // Para os próximos, como não há uma tradução exata no seu array, estou usando as mais próximas, assumindo que são variações do evento principal.
-                                                        'service_activated_hosting' => '🌐 ' . zapcel_trans('hosting'), // Ou 'hosting_account', dependendo do contexto.
-                                                        'service_activated_other' => '🌐 ' . zapcel_trans('other_services'),
-                                                        'service_activated_reseller' => '📋 ' . zapcel_trans('reseller'), // Ou 'reseller_account'
-                                                        'service_activated_vps' => '☁️ ' . zapcel_trans('dedicated_vps_server'),
-                                                    ];
-                                                    
-                                                    $eventLabel = $eventLabels[$template->trigger_event] ?? $template->trigger_event;
-                                                    echo '<span class="badge bg-secondary" style="font-size: 12px;">' . htmlspecialchars($eventLabel) . '</span>';
-                                                }
-                                                ?>
-                                            </td>
-                                            <td>
-                                                <?php if ($template->active): ?>
-                                                    <span class="badge bg-success"><?php echo $this->LANG['active']; ?></span>
-                                                <?php else: ?>
-                                                    <span class="badge bg-secondary"><?php echo $this->LANG['inactive']; ?></span>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td>
-                                                <span class="badge bg-primary"><?= $template->usage_count ?></span>
-                                            </td>
-                                            <td>
-                                                <small class="text-muted">
-                                                    <?= date('d/m/Y H:i', strtotime($template->updated_at)) ?>
-                                                </small>
-                                            </td>
-                                            <td class="text-center">
-                                                <div class="btn-group">
-                                                    <a href="addonmodules.php?module=zapcel&action=edit_template&id=<?= $template->id ?>" 
-                                                            class="btn btn-sm btn-outline-primary" title="<?php echo $this->LANG['edit']; ?>">
-                                                        <i class="fas fa-edit"></i>
-                                                    </a>
-                                                    <?php if ($template->active): ?>
-                                                        <button class="btn btn-sm btn-outline-warning deactivate-template" 
-                                                                data-id="<?= $template->id ?>" title="<?php echo $this->LANG['deactivate']; ?>">
-                                                            <i class="fas fa-pause"></i>
-                                                        </button>
-                                                    <?php else: ?>
-                                                        <button class="btn btn-sm btn-outline-success activate-template" 
-                                                                data-id="<?= $template->id ?>" title="<?php echo $this->LANG['activate']; ?>">
-                                                            <i class="fas fa-play"></i>
-                                                        </button>
-                                                    <?php endif; ?>
-                                                    <button class="btn btn-sm btn-outline-danger delete-template" 
-                                                            data-id="<?= $template->id ?>" data-name="<?= htmlspecialchars($template->name) ?>" 
-                                                            title="<?php echo $this->LANG['delete']; ?>">
-                                                        <i class="fas fa-trash"></i>
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                            <?php else: ?>
-                            <div class="text-center py-5">
-                                <i class="fas fa-file-alt fa-4x text-muted mb-3"></i>
-                                <h4 class="text-muted"><?php echo $this->LANG['no_templates_found']; ?></h4>
-                                <p class="text-muted"><?php echo $this->LANG['create_first_template']; ?></p>
-                                <button class="btn btn-success" data-toggle="modal" data-target="#newTemplateModal">
-                                    <i class="fas fa-plus mr-1"></i> <?php echo $this->LANG['create_first_template']; ?>
-                                </button>
-                            </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    
-        <!-- Modal Novo Template -->
-        <div class="modal fade" id="newTemplateModal" tabindex="-1" role="dialog">
-            <div class="modal-dialog modal-lg" role="document">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h1 class="modal-title"><?php echo $this->LANG['create_template']; ?></h1>
-                        <button type="button" class="close" data-dismiss="modal">&times;</button>
-                    </div>
-                    <form id="createTemplateForm">
-                        <div class="modal-body"> 
-                            <div class="form-group">
-                                <label class="font-weight-bold"><?php echo $this->LANG['template_name']; ?></label>
-                                <input type="text" name="name" class="form-control" required placeholder="<?php echo $this->LANG['template_name']; ?>">
-                            </div>
-                            <div class="form-group">
-                                <label class="font-weight-bold"><?php echo $this->LANG['trigger_event']; ?></label>
-                                <select name="trigger_event" id="triggerEventSelect" class="form-control" required>
-                                    <option value=""><?php echo $this->LANG['select_event']; ?></option>
-                                    
-                                    <!-- FATURAS -->
-                                    <optgroup label="📋 Faturas">
-                                        <option value="invoice_created"><?php echo $this->LANG['invoice_created']; ?></option>
-                                        <option value="invoice_paid"><?php echo $this->LANG['invoice_paid']; ?></option>
-                                        <option value="invoice_cancelled"><?php echo $this->LANG['invoice_cancelled']; ?></option>
-                                        <option value="invoice_reminder"><?php echo $this->LANG['invoice_reminder']; ?></option>
-                                        <option value="invoice_reminder_1"><?php echo $this->LANG['invoice_reminder_1']; ?></option>
-                                        <option value="invoice_reminder_2"><?php echo $this->LANG['invoice_reminder_2']; ?></option>
-                                        <option value="invoice_reminder_3"><?php echo $this->LANG['invoice_reminder_3']; ?></option>
-                                    </optgroup>
-                                    
-                                    <!-- TICKETS -->
-                                    <optgroup label="🎫 Suporte">
-                                        <option value="ticket_opened"><?php echo $this->LANG['ticket_opened']; ?></option>
-                                        <option value="ticket_reply"><?php echo $this->LANG['ticket_reply']; ?></option>
-                                    </optgroup>
-                                    
-                                    <!-- SERVIÇOS -->
-                                    <optgroup label="🖥️ Serviços">
-                                        <option value="service_activated"><?php echo $this->LANG['service_activated']; ?></option>
-                                        <option value="service_suspended"><?php echo $this->LANG['service_suspended']; ?></option>
-                                        <option value="service_unsuspended"><?php echo $this->LANG['service_unsuspended']; ?></option>
-                                        <option value="service_terminated"><?php echo $this->LANG['service_terminated']; ?></option>
-                                        <option value="cancellation_request"><?php echo $this->LANG['cancellation_request']; ?></option>
-                                    </optgroup>
-                                    
-                                    <!-- CLIENTES -->
-                                    <optgroup label="👤 Clientes">
-                                        <option value="client_added"><?php echo $this->LANG['client_added']; ?></option>
-                                        <option value="client_edited"><?php echo $this->LANG['client_edited']; ?></option>
-                                        <option value="password_changed"><?php echo $this->LANG['password_changed']; ?></option>
-                                    </optgroup>
-                                    
-                                    <!-- COTAÇÕES -->
-                                    <optgroup label="💰 Cotações">
-                                        <option value="quote_created"><?php echo $this->LANG['quote_created']; ?></option>
-                                        <option value="quote_modified"><?php echo $this->LANG['quote_modified']; ?></option>
-                                        <option value="quote_accepted"><?php echo $this->LANG['quote_accepted']; ?></option>
-                                    </optgroup>
-                                    
-                                    <!-- SISTEMA -->
-                                    <optgroup label="⚙️ Sistema">
-                                        <option value="whatsapp_validation"><?php echo $this->LANG['whatsapp_validation']; ?></option>
-                                        <option value="email_presend"><?php echo $this->LANG['email_presend']; ?></option>
-                                    </optgroup>
-
-                                    <!-- RESPOSTAS RÁPIDAS -->
-                                    <optgroup label="⚡ Respostas Rápidas (Mensagens Personalizadas)">
-                                        <option value="<?= $nextQuickReplyEvent ?>" data-type="quick_reply">
-                                            Nova Resposta Rápida #<?= $nextQuickReplyNumber ?>
-                                        </option>
-                                    </optgroup>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label class="font-weight-bold"><?php echo $this->LANG['message_template']; ?></label>
-                                
-                                <!-- Barra de Ferramentas de Formatação -->
-                                <div class="whatsapp-toolbar" style="background: #f8f9fa; border: 1px solid #dee2e6; border-bottom: none; padding: 8px; border-radius: 4px 4px 0 0;">
-                                    <div class="btn-group btn-group-sm" role="group">
-                                        <button type="button" class="btn btn-outline-secondary format-btn" data-format="bold" title="<?php echo $this->LANG['bold']; ?>">
-                                            <i class="fas fa-bold"></i>
-                                        </button>
-                                        <button type="button" class="btn btn-outline-secondary format-btn" data-format="italic" title="<?php echo $this->LANG['italic']; ?>">
-                                            <i class="fas fa-italic"></i>
-                                        </button>
-                                        <button type="button" class="btn btn-outline-secondary format-btn" data-format="strikethrough" title="<?php echo $this->LANG['strikethrough']; ?>">
-                                            <i class="fas fa-strikethrough"></i>
-                                        </button>
-                                        <button type="button" class="btn btn-outline-secondary format-btn" data-format="monospace" title="<?php echo $this->LANG['monospace']; ?>">
-                                            <i class="fas fa-code"></i>
-                                        </button>
-                                    </div>
-                                    <div class="btn-group btn-group-sm ml-2" role="group">
-                                        <button type="button" class="btn btn-outline-secondary" id="emojiPickerBtn" title="<?php echo $this->LANG['emojis']; ?>">
-                                            <i class="far fa-smile"></i> <?php echo $this->LANG['emojis']; ?>
-                                        </button>
-                                    </div>
-                                </div>
-                                
-                                <textarea name="template" id="templateTextarea" class="form-control" rows="10" 
-                                        placeholder="<?php echo $this->LANG['enter_message_template']; ?>" 
-                                        style="border-radius: 0 0 4px 4px; font-family: 'Segoe UI', sans-serif;"></textarea>
-                                <small class="form-text text-muted">
-                                    <?php echo $this->LANG['use_variables_in_braces']; ?>
-                                </small>
-                                
-                                <!-- Painel de Emojis -->
-                                <div id="emojiPanel" class="card mt-2" style="display: none; max-height: 200px; overflow-y: auto;">
-                                    <div class="card-body p-2">
-                                        <div class="emoji-grid" style="display: grid; grid-template-columns: repeat(10, 1fr); gap: 5px; font-size: 24px; text-align: center;">
-                                            <!-- Status e Ações -->
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Verificado">✅</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Check">✔️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Erro">❌</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="X">✖️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Atenção">⚠️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Importante">❗</span>
-                                            
-                                            <!-- Setas -->
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Seta Direita">➡️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Seta Esquerda">⬅️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Seta Cima">⬆️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Seta Baixo">⬇️</span>
-                                            
-                                            <!-- Controles -->
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Play">▶️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Pausa">⏸️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Stop">⏹️</span>
-                                            
-                                            <!-- Formas Geométricas -->
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Círculo">⭕</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Círculo Preto">●</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Quadrado Preto">◼️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Quadrado Branco">◻️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Quadrado Médio">◾</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Quadrado Pequeno">▫️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Ponto">▪️</span>
-                                            
-                                            <!-- Símbolos Matemáticos -->
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Mais">➕</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Menos">➖</span>
-                                            
-                                            <!-- Ícones Gerais -->
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Estrela">⭐</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Email">✉️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Telefone">☎️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Rápido">⚡</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Informação">ℹ️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Configurações">⚙️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Reciclar">♻️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Relógio">⏰</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Marca Registrada">™️</span>
-                                            <span class="emoji-item-edit" style="cursor: pointer;" title="Preto">⚫</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div id="availableVariables" class="mt-2" style="display:none;">
-                                    <strong><?php echo $this->LANG['available_variables']; ?>:</strong>
-                                    <div id="variablesList" class="mt-1"></div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-dismiss="modal"><?php echo $this->LANG['cancel']; ?></button>
-                            <button type="submit" class="btn btn-primary"><?php echo $this->LANG['create_template']; ?></button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
-        <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>                       
-        <script>
-            $(document).ready(function() {
-                // Apenas Desativar Template
-                $('.deactivate-template').click(function() {
-                    var templateId = $(this).data('id');
-                    
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: {
-                            subaction: 'deactivate_template',
-                            template_id: templateId
-                        },
-                        dataType: 'json',
-                        success: function(response) {
-                            if (response.success) {
-                                Swal.fire({
-                                    title: 'Desativado!',
-                                    text: 'Template desativado com sucesso!',
-                                    icon: 'warning',
-                                    confirmButtonColor: '#ffc107',
-                                    confirmButtonText: 'OK'
-                                }).then(() => {
-                                    location.reload();
-                                });
-                            } else {
-                                Swal.fire({
-                                    title: 'Erro',
-                                    text: response.error,
-                                    icon: 'error',
-                                    confirmButtonText: 'OK'
-                                });
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: 'Erro', 
-                                text: zapcel_trans('connection_error_prefix') + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-
-                // Ativar Template
-                $('.activate-template').click(function() {
-                    var templateId = $(this).data('id');
-                    
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: {
-                            subaction: 'activate_template',
-                            template_id: templateId
-                        },
-                        dataType: 'json',
-                        success: function(response) {
-                            if (response.success) {
-                                Swal.fire({
-                                    title: 'Ativado!',
-                                    text: 'Template ativado com sucesso!',
-                                    icon: 'success',
-                                    confirmButtonColor: '#28a745',
-                                    confirmButtonText: 'OK'
-                                }).then(() => {
-                                    location.reload();
-                                });
-                            } else {
-                                Swal.fire({
-                                    title: 'Erro',
-                                    text: response.error,
-                                    icon: 'error',
-                                    confirmButtonText: 'OK'
-                                });
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: 'Erro',
-                                text: zapcel_trans('connection_error_prefix') + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-        
-                // Excluir Template
-                $('.delete-template').click(function() {
-                    var templateId = $(this).data('id');
-                    var templateName = $(this).data('name');
-                    
-                    Swal.fire({
-                        title: '<?php echo $this->LANG['confirm_delete']; ?>',
-                        text: '<?php echo $this->LANG['confirm_delete_template']; ?>'.replace('%s', templateName),
-                        icon: 'warning',
-                        showCancelButton: true,
-                        confirmButtonText: '<?php echo $this->LANG['delete']; ?>',
-                        cancelButtonText: '<?php echo $this->LANG['cancel']; ?>',
-                        confirmButtonColor: '#d33',
-                        cancelButtonColor: '#3085d6',
-                        reverseButtons: true
-                    }).then((result) => {
-                        if (result.isConfirmed) {
-                            $.ajax({
-                                url: 'addonmodules.php?module=zapcel&action=ajax',
-                                type: 'POST',
-                                data: {
-                                    subaction: 'delete_template',
-                                    template_id: templateId
-                                },
-                                dataType: 'json',
-                                success: function(response) {
-                                    if (response.success) {
-                                        location.reload();
-                                    } else {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['error']; ?>',
-                                            text: response.error,
-                                            icon: 'error',
-                                            confirmButtonText: 'OK'
-                                        });
-                                    }
-                                },
-                                error: function(xhr, status, error) {
-                                    console.error('Erro AJAX:', xhr.responseText);
-                                    Swal.fire({
-                                        title: '<?php echo $this->LANG['error']; ?>',
-                                        text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                        icon: 'error',
-                                        confirmButtonText: 'OK'
-                                    });
-                                }
-                            });
-                        }
-                    });
-                });
-        
-                // Carregar variáveis ao selecionar evento
-                $('#triggerEventSelect').change(function() {
-                    var event = $(this).val();
-                    var variables = {
-                        // === FATURAS ===
-                        'invoice_created': '{cliente}, {numero_fatura}, {titulo}, {valor}, {vencimento}, {data_criacao}, {codigopix}, {linhadigitavel}, {qr_code_url}, {link_fatura}, {link_fatura_autologin}, {itens_fatura}, {provedor}, {assinatura}',
-                        'invoice_paid': '{cliente}, {numero_fatura}, {titulo}, {valor}, {data_pagamento}, {metodo_pagamento}, {provedor}, {assinatura}',
-                        'invoice_cancelled': '{cliente}, {numero_fatura}, {titulo}, {valor}, {data_cancelamento}, {motivo_cancelamento}, {provedor}, {assinatura}',
-                        'invoice_reminder': '{cliente}, {numero_fatura}, {titulo}, {valor}, {vencimento}, {dias_vencimento}, {codigopix}, {linhadigitavel}, {link_fatura}, {link_fatura_autologin}, {provedor}, {assinatura}',
-                        'invoice_reminder_1': '{cliente}, {numero_fatura}, {titulo}, {valor}, {vencimento}, {dias_vencimento}, {codigopix}, {linhadigitavel}, {link_fatura}, {link_fatura_autologin}, {provedor}, {assinatura}',
-                        'invoice_reminder_2': '{cliente}, {numero_fatura}, {titulo}, {valor}, {vencimento}, {dias_vencimento}, {codigopix}, {linhadigitavel}, {link_fatura}, {link_fatura_autologin}, {provedor}, {assinatura}',
-                        'invoice_reminder_3': '{cliente}, {numero_fatura}, {titulo}, {valor}, {vencimento}, {dias_vencimento}, {codigopix}, {linhadigitavel}, {link_fatura}, {link_fatura_autologin}, {provedor}, {assinatura}',
-
-                        // === SERVIÇOS ===
-                        'service_activated': '{cliente}, {servico}, {dominio}, {data_ativacao}, {ip_dedicado}, {usuario}, {senha}, {provedor}, {assinatura}',
-                        'service_suspended': '{cliente}, {servico}, {dominio}, {data_suspensao}, {motivo}, {provedor}, {assinatura}',
-                        'service_unsuspended': '{cliente}, {servico}, {dominio}, {data_reativacao}, {provedor}, {assinatura}',
-                        'service_terminated': '{cliente}, {servico}, {dominio}, {data_cancelamento}, {provedor}, {assinatura}',
-                        'cancellation_request': '{cliente}, {id_servico}, {nome_servico}, {razao_cancelamento}, {tipo_cancelamento}, {data_solicitacao}, {dominio}, {provedor}, {assinatura}',
-
-                        // === TICKETS ===
-                        'ticket_created': '{cliente}, {numero_ticket}, {assunto}, {departamento}, {prioridade}, {link_ticket}, {link_ticket_autologin}, {provedor}, {assinatura}',
-                        'ticket_opened': '{cliente}, {numero_ticket}, {assunto}, {departamento}, {prioridade}, {link_ticket}, {link_ticket_autologin}, {provedor}, {assinatura}',
-                        'ticket_reply': '{cliente}, {numero_ticket}, {assunto}, {atendente}, {link_ticket}, {link_ticket_autologin}, {provedor}, {assinatura}',
-                        'ticket_replied': '{cliente}, {numero_ticket}, {assunto}, {atendente}, {link_ticket}, {link_ticket_autologin}, {provedor}, {assinatura}',
-
-                        // === CLIENTES ===
-                        'client_added': '{cliente}, {email}, {telefone}, {data_cadastro}, {provedor}, {assinatura}',
-                        'client_edited': '{cliente}, {email}, {telefone}, {endereco}, {cidade}, {estado}, {alteracoes}, {data_alteracao}, {provedor}, {assinatura}',
-                        'password_changed': '{cliente}, {data_alteracao}, {nova_senha}, {provedor}, {assinatura}',
-
-                        // === COTAÇÕES ===
-                        'quote_created': '{cliente}, {numero_cotacao}, {subject_cotacao}, {valor_cotacao}, {validade_cotacao}, {status_cotacao}, {itens_cotacao}, {provedor}, {assinatura}',
-                        'quote_modified': '{cliente}, {numero_cotacao}, {subject_cotacao}, {valor_cotacao}, {validade_cotacao}, {status_cotacao}, {alteracoes}, {itens_cotacao}, {provedor}, {assinatura}',
-                        'quote_accepted': '{cliente}, {numero_cotacao}, {subject_cotacao}, {valor_cotacao}, {data_aceitacao}, {status_cotacao}, {itens_cotacao}, {provedor}, {assinatura}',
-
-                        // === EMAIL/SISTEMA ===
-                        'email_presend': '{cliente}, {assunto}, {mensagem}, {tipo_servico}, {dominio}, {nome_produto}, {ip_dedicado}, {usuario}, {senha}, {provedor}, {assinatura}',
-                        'email_replaced': '{cliente}, {assunto}, {tipo_servico}, {provedor}, {assinatura}',
-                        'whatsapp_validation': '{cliente}, {codigo_verificacao}, {provedor}, {assinatura}',
-
-                        // === SISTEMA ===
-                        'test_message': '{cliente}, {mensagem_teste}, {provedor}, {assinatura}',
-                        'system_error': '{mensagem_erro}, {provedor}'
-                    };
-                    
-                    if (event && variables[event]) {
-                        $('#variablesList').html('<code>' + variables[event] + '</code>');
-                        $('#availableVariables').show();
-                    } else {
-                        $('#availableVariables').hide();
-                    }
-                });
-                
-                // Criar Template
-                $('#createTemplateForm').submit(function(e) {
-                    e.preventDefault();
-                    var formData = $(this).serializeArray();
-                    var dataObj = {};
-                    $.each(formData, function(i, field) {
-                        dataObj[field.name] = field.value;
-                    });
-                    
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: $.extend({subaction: 'create_template'}, dataObj),
-                        dataType: 'json',
-                        success: function(response) {
-                            if (response.success) {
-                            location.href = 'addonmodules.php?module=zapcel&action=edit_template&id=' + response.template_id;
-                        } else {
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: response.error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                        },
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-                
-                // ========== BARRA DE FERRAMENTAS DE FORMATAÇÃO ==========
-                
-                // Função para formatar texto selecionado
-                function formatText(format, textarea) {
-                    var start = textarea.selectionStart;
-                    var end = textarea.selectionEnd;
-                    var selectedText = textarea.value.substring(start, end);
-                    
-                    if (!selectedText) {
-                        Swal.fire({
-                            title: '<?php echo $this->LANG['warning']; ?>',
-                            text: '<?php echo $this->LANG['select_text_to_format']; ?>',
-                            icon: 'warning',
-                            confirmButtonText: 'OK'
-                        });
-                        return;
-                    }
-                    
-                    var formattedText = '';
-                    switch(format) {
-                        case 'bold':
-                            formattedText = '*' + selectedText + '*';
-                            break;
-                        case 'italic':
-                            formattedText = '_' + selectedText + '_';
-                            break;
-                        case 'strikethrough':
-                            formattedText = '~' + selectedText + '~';
-                            break;
-                        case 'monospace':
-                            formattedText = '```' + selectedText + '```';
-                            break;
-                    }
-                    
-                    textarea.value = textarea.value.substring(0, start) + formattedText + textarea.value.substring(end);
-                    textarea.focus();
-                    textarea.setSelectionRange(start, start + formattedText.length);
-                }
-                
-                // Botões de formatação - Criar
-                $('.format-btn').click(function() {
-                    var format = $(this).data('format');
-                    var textarea = document.getElementById('templateTextarea');
-                    formatText(format, textarea);
-                });
-                
-                // Botão de emojis - Criar
-                $('#emojiPickerBtn').click(function() {
-                    $('#emojiPanel').slideToggle();
-                });
-                
-                // Inserir emoji ao clicar - Criar
-                $('.emoji-item').click(function() {
-                    var emoji = $(this).text();
-                    var textarea = document.getElementById('templateTextarea');
-                    var cursorPos = textarea.selectionStart;
-                    var textBefore = textarea.value.substring(0, cursorPos);
-                    var textAfter = textarea.value.substring(cursorPos);
-                    textarea.value = textBefore + emoji + textAfter;
-                    textarea.focus();
-                    textarea.setSelectionRange(cursorPos + emoji.length, cursorPos + emoji.length);
-                });
-
-                // Filtrar templates
-                $('.filter-templates').click(function() {
-                    const filter = $(this).data('filter');
-                    
-                    // Remove classes ativas
-                    $('.filter-templates').removeClass('btn-primary btn-secondary btn-warning active')
-                        .addClass('btn-outline-secondary');
-                    
-                    // Adiciona classe ativa
-                    if (filter === 'quick_reply') {
-                        $(this).removeClass('btn-outline-secondary btn-outline-warning').addClass('btn-warning active');
-                    } else {
-                        $(this).removeClass('btn-outline-secondary btn-outline-primary').addClass('btn-primary active');
-                    }
-                    
-                    // Filtra linhas
-                    if (filter === 'all') {
-                        $('table tbody tr').show();
-                    } else if (filter === 'quick_reply') {
-                        $('table tbody tr').each(function() {
-                            const type = $(this).find('td:eq(1) .badge').text().trim();
-                            if (type === 'Resposta Rápida') {
-                                $(this).show();
-                            } else {
-                                $(this).hide();
-                            }
-                        });
-                    } else if (filter === 'events') {
-                        $('table tbody tr').each(function() {
-                            const type = $(this).find('td:eq(1) .badge').text().trim();
-                            if (type === 'Evento') {
-                                $(this).show();
-                            } else {
-                                $(this).hide();
-                            }
-                        });
-                    }
-                    
-                    // Atualiza contador
-                    const visibleCount = $('table tbody tr:visible').length;
-                    $(this).html($(this).html().replace(/\(\d+\)/, '(' + visibleCount + ')'));
-                });
-
-                // Buscar templates
-                $('#searchTemplates').on('input', function() {
-                    const search = $(this).val().toLowerCase();
-                    
-                    $('table tbody tr').each(function() {
-                        const name = $(this).find('td:eq(0)').text().toLowerCase();
-                        const event = $(this).find('td:eq(2)').text().toLowerCase();
-                        
-                        if (name.includes(search) || event.includes(search)) {
-                            $(this).show();
-                        } else {
-                            $(this).hide();
-                        }
-                    });
-                });
-
-                // Atualiza contadores ao carregar
-                const totalTemplates = $('table tbody tr').length;
-                const quickReplyCount = $('table tbody tr').filter(function() {
-                    return $(this).find('td:eq(1) .badge').text().trim() === 'Resposta Rápida';
-                }).length;
-                const eventCount = totalTemplates - quickReplyCount;
-
-                $('.filter-templates[data-filter="all"]').html('<i class="fas fa-list"></i> Todos (' + totalTemplates + ')');
-                $('.filter-templates[data-filter="events"]').html('<i class="fas fa-bolt"></i> Eventos (' + eventCount + ')');
-                $('.filter-templates[data-filter="quick_reply"]').html('<i class="fas fa-comments"></i> Respostas Rápidas (' + quickReplyCount + ')');
-            });
-            $(document).ready(function() {
-                $('#templatesTable').DataTable({
-                    order: [[0, 'asc']], // Ordena por "Evento" crescente
-                    pageLength: 25,
-                    language: {
-                        url: '//cdn.datatables.net/plug-ins/1.13.7/i18n/pt-BR.json'
-                    },
-                    columnDefs: [
-                        { orderable: false, targets: [3] } // Desabilita ordenação na coluna "Ações"
-                    ]
-                });
-            });
-        </script>
-        <?php
-        return ob_get_clean();
-    }
-    
-    /**
-     * Página de Edição de Template
-     */
-    private function editTemplatePage()
-    {
-        $templateId = (int)($_GET['id'] ?? 0);
-        
-        if (!$templateId) {
-            return '<div class="alert alert-danger">' . $this->LANG['invalid_id'] . '</div>';
-        }
-    
-        $template = Capsule::table('mod_zapcel_templates')
-            ->where('id', $templateId)
-            ->first();
-    
-        if (!$template) {
-            return '<div class="alert alert-danger">' . $this->LANG['template_not_found'] . '</div>';
-        }
-    
-        ob_start();
-        ?>
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fas fa-edit mr-2"></i> 
-                            <?php echo $this->LANG['edit_template']; ?>: <?= htmlspecialchars($template->name) ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['edit_template_subtitle']; ?></p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <a href="addonmodules.php?module=zapcel&action=templates" class="btn btn-outline-secondary mr-2">
-                            <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back']; ?>
-                        </a>
-                        <button class="btn btn-success" id="saveTemplate">
-                            <i class="fas fa-save mr-1"></i> <?php echo $this->LANG['save']; ?>
-                        </button>
-                    </div>
-                </div>
-            </div>
-    
-            <div class="row">
-                <div class="col-md-8">
-                    <div class="card">
-                        <div class="card-body">
-                            <form id="editTemplateForm">
-                                <input type="hidden" name="template_id" value="<?= $template->id ?>">
-                                
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['template_name']; ?></label>
-                                    <input type="text" name="name" class="form-control" value="<?= htmlspecialchars($template->name) ?>" required>
-                                </div>
-    
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['trigger_event']; ?></label>
-                                    <input type="text" class="form-control" value="<?= htmlspecialchars($template->trigger_event) ?>" readonly>
-                                    <small class="form-text text-muted"><?php echo $this->LANG['event_cannot_be_changed']; ?></small>
-                                </div>
-    
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['message_template']; ?></label>
-                                    
-                                    <!-- Barra de Ferramentas de Formatação -->
-                                    <div class="whatsapp-toolbar" style="background: #f8f9fa; border: 1px solid #dee2e6; border-bottom: none; padding: 8px; border-radius: 4px 4px 0 0;">
-                                        <div class="btn-group btn-group-sm" role="group">
-                                            <button type="button" class="btn btn-outline-secondary format-btn-edit" data-format="bold" title="<?php echo $this->LANG['bold']; ?>">
-                                                <i class="fas fa-bold"></i>
-                                            </button>
-                                            <button type="button" class="btn btn-outline-secondary format-btn-edit" data-format="italic" title="<?php echo $this->LANG['italic']; ?>">
-                                                <i class="fas fa-italic"></i>
-                                            </button>
-                                            <button type="button" class="btn btn-outline-secondary format-btn-edit" data-format="strikethrough" title="<?php echo $this->LANG['strikethrough']; ?>">
-                                                <i class="fas fa-strikethrough"></i>
-                                            </button>
-                                            <button type="button" class="btn btn-outline-secondary format-btn-edit" data-format="monospace" title="<?php echo $this->LANG['monospace']; ?>">
-                                                <i class="fas fa-code"></i>
-                                            </button>
-                                        </div>
-                                        <div class="btn-group btn-group-sm ml-2" role="group">
-                                            <button type="button" class="btn btn-outline-secondary" id="emojiPickerBtnEdit" title="<?php echo $this->LANG['emojis']; ?>">
-                                                <i class="far fa-smile"></i> <?php echo $this->LANG['emojis']; ?>
-                                            </button>
-                                        </div>
-                                    </div>
-                                    
-                                    <textarea name="template" id="templateTextareaEdit" class="form-control" rows="15" 
-                                              style="border-radius: 0 0 4px 4px; font-family: 'Segoe UI', sans-serif;" required><?= htmlspecialchars($template->template) ?></textarea>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['use_variables_in_braces']; ?>
-                                    </small>
-                                    
-                                    <!-- Painel de Emojis -->
-                                    <div id="emojiPanelEdit" class="card mt-2" style="display: none; max-height: 200px; overflow-y: auto;">
-                                        <div class="card-body p-2">
-                                            <div class="emoji-grid" style="display: grid; grid-template-columns: repeat(10, 1fr); gap: 5px; font-size: 24px; text-align: center;">
-                                                <!-- Status e Ações -->
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Verificado">✅</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Check">✔️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Erro">❌</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="X">✖️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Atenção">⚠️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Importante">❗</span>
-                                                
-                                                <!-- Setas -->
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Seta Direita">➡️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Seta Esquerda">⬅️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Seta Cima">⬆️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Seta Baixo">⬇️</span>
-                                                
-                                                <!-- Controles -->
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Play">▶️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Pausa">⏸️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Stop">⏹️</span>
-                                                
-                                                <!-- Formas Geométricas -->
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Círculo">⭕</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Círculo Preto">●</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Quadrado Preto">◼️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Quadrado Branco">◻️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Quadrado Médio">◾</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Quadrado Pequeno">▫️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Ponto">▪️</span>
-                                                
-                                                <!-- Símbolos Matemáticos -->
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Mais">➕</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Menos">➖</span>
-                                                
-                                                <!-- Ícones Gerais -->
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Estrela">⭐</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Email">✉️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Telefone">☎️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Rápido">⚡</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Informação">ℹ️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Configurações">⚙️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Reciclar">♻️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Relógio">⏰</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Marca Registrada">™️</span>
-                                                <span class="emoji-item-edit" style="cursor: pointer;" title="Preto">⚫</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-    
-                                <div class="form-group">
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" name="active" value="1" <?= $template->active ? 'checked' : '' ?>>
-                                            <?php echo $this->LANG['activate']; ?>
-                                        </label>
-                                    </div>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-    
-                <div class="col-md-4">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['available_variables']; ?></h3>
-                        </div>
-                        <div class="card-body" style="max-height: 452px; overflow-y: auto;">
-                            <!-- VARIÁVEIS GLOBAIS -->
-                            <h6><?php echo $this->LANG['general']; ?>:</h6>
-                            <ul class="list-unstyled">
-                                <li><code>{cliente}</code> - <?php echo $this->LANG['client_var']; ?></li>
-                                <li><code>{provedor}</code> - <?php echo $this->LANG['provider_var']; ?></li>
-                                <li><code>{assinatura}</code> - <?php echo $this->LANG['signature_var']; ?></li>
-                                <li><code>{quebrar_mensagem}</code> - <?php echo $this->LANG['break_message_var']; ?></li>
-                                <li><code>{url_whmcs}</code> - <?php echo $this->LANG['whmcs_url_var']; ?></li>
-                                <li><code>{data_atual}</code> - <?php echo $this->LANG['current_date_var']; ?></li>
-                                <li><code>{hora_atual}</code> - <?php echo $this->LANG['current_time_var']; ?></li>
-                                <li><code>{data_hora_atual}</code> - <?php echo $this->LANG['current_datetime_var']; ?></li>
-                            </ul>
-
-                            <!-- CLIENTES -->
-                            <h6><?php echo $this->LANG['clients']; ?>:</h6>
-                            <ul class="list-unstyled">
-                                <li><code>{cliente_id}</code> - <?php echo $this->LANG['client_id_var']; ?></li>
-                                <li><code>{cliente_primeiro_nome}</code> - <?php echo $this->LANG['client_firstname_var']; ?></li>
-                                <li><code>{cliente_sobrenome}</code> - <?php echo $this->LANG['client_lastname_var']; ?></li>
-                                <li><code>{email}</code> - <?php echo $this->LANG['client_email_var']; ?></li>
-                                <li><code>{telefone}</code> - <?php echo $this->LANG['client_phone_var']; ?></li>
-                                <li><code>{endereco}</code> - <?php echo $this->LANG['client_address_var']; ?></li>
-                                <li><code>{bairro}</code> - <?php echo $this->LANG['client_neighborhood_var']; ?></li>
-                                <li><code>{cidade}</code> - <?php echo $this->LANG['client_city_var']; ?></li>
-                                <li><code>{estado}</code> - <?php echo $this->LANG['client_state_var']; ?></li>
-                                <li><code>{cep}</code> - <?php echo $this->LANG['client_zipcode_var']; ?></li>
-                                <li><code>{pais}</code> - <?php echo $this->LANG['client_country_var']; ?></li>
-                            </ul>
-
-                            <!-- FATURAS -->
-                            <h6><?php echo $this->LANG['invoices']; ?>:</h6>
-                            <ul class="list-unstyled">
-                                <li><code>{numero_fatura}</code> - <?php echo $this->LANG['invoice_number_var']; ?></li>
-                                <li><code>{titulo}</code> - <?php echo $this->LANG['title_var']; ?></li>
-                                <li><code>{valor}</code> - <?php echo $this->LANG['value_var']; ?></li>
-                                <li><code>{vencimento}</code> - <?php echo $this->LANG['due_date_var']; ?></li>
-                                <li><code>{dias_vencimento}</code> - <?php echo $this->LANG['days_until_due_var']; ?></li>
-                                <li><code>{data_criacao}</code> - <?php echo $this->LANG['creation_date_var']; ?></li>
-                                <li><code>{data_pagamento}</code> - <?php echo $this->LANG['payment_date_var']; ?></li>
-                                <li><code>{data_cancelamento}</code> - <?php echo $this->LANG['cancellation_date_var']; ?></li>
-                                <li><code>{codigopix}</code> - <?php echo $this->LANG['pix_code_var']; ?></li>
-                                <li><code>{qr_code_url}</code> - <?php echo $this->LANG['qr_code_url_var']; ?></li>
-                                <li><code>{linhadigitavel}</code> - <?php echo $this->LANG['barcode_var']; ?></li>
-                                <li><code>{link_fatura}</code> - <?php echo $this->LANG['invoice_link_var']; ?></li>
-                                <li><code>{itens_fatura}</code> - <?php echo $this->LANG['invoice_items_var']; ?></li>
-                                <li><code>{metodo_pagamento}</code> - <?php echo $this->LANG['payment_method_var']; ?></li>
-                                <li><code>{motivo_cancelamento}</code> - <?php echo $this->LANG['cancellation_reason_var']; ?></li>
-                            </ul>
-
-                            <!-- TICKETS -->
-                            <h6><?php echo $this->LANG['tickets']; ?>:</h6>
-                            <ul class="list-unstyled">
-                                <li><code>{numero_ticket}</code> - <?php echo $this->LANG['ticket_number_var']; ?></li>
-                                <li><code>{assunto}</code> - <?php echo $this->LANG['subject_var']; ?></li>
-                                <li><code>{mensagem}</code> - <?php echo $this->LANG['ticket_message_var']; ?></li>
-                                <li><code>{departamento}</code> - <?php echo $this->LANG['department_var']; ?></li>
-                                <li><code>{prioridade}</code> - <?php echo $this->LANG['priority_var']; ?></li>
-                                <li><code>{atendente}</code> - <?php echo $this->LANG['admin_name_var']; ?></li>
-                                <li><code>{link_ticket}</code> - <?php echo $this->LANG['ticket_link_var']; ?></li>
-                            </ul>
-
-                            <!-- AUTO LOGIN -->
-                            <h6>
-                                <a href="#" 
-                                    data-toggle="tooltip" 
-                                    data-placement="top" 
-                                    title='Essas variáveis também podem ser utilizadas nos templates de e-mail, por exemplo: <a href="{link_fatura_autologin}">Acessar fatura diretamente</a>' 
-                                    style="color: inherit; text-decoration: none; cursor: help;"
-                                >
-                                    <?php echo $this->LANG['autologin_title']; ?>
-                                    <i class="fas fa-info-circle ml-1" style="font-size: 0.8em; opacity: 0.7;"></i>
-                                </a>:
-                            </h6>
-
-                            <script>
-                            $(function () {
-                                $('[data-toggle="tooltip"]').tooltip();
-                            });
-                            </script>
-                            <ul class="list-unstyled">
-                                <li><code>{link_fatura_autologin}</code> - <?php echo $this->LANG['link_fatura_autologin']; ?></li>
-                                <li><code>{link_ticket_autologin}</code> - <?php echo $this->LANG['link_ticket_autologin']; ?></li>
-                                <li><code>{token_autologin}</code> - <?php echo $this->LANG['token_autologin']; ?></li>
-                                <li><code>{token_expiracao}</code> - <?php echo $this->LANG['token_expiracao']; ?></li>
-                            </ul>
-
-                            <!-- SERVIÇOS -->
-                            <h6><?php echo $this->LANG['services']; ?>:</h6>
-                            <ul class="list-unstyled">
-                                <li><code>{servico}</code> - <?php echo $this->LANG['service_name_var']; ?></li>
-                                <li><code>{nome_servico}</code> - <?php echo $this->LANG['service_name_alt_var']; ?></li>
-                                <li><code>{id_servico}</code> - <?php echo $this->LANG['service_id_var']; ?></li>
-                                <li><code>{dominio}</code> - <?php echo $this->LANG['domain_var']; ?></li>
-                                <li><code>{ip_dedicado}</code> - <?php echo $this->LANG['dedicated_ip_var']; ?></li>
-                                <li><code>{usuario}</code> - <?php echo $this->LANG['username_var']; ?></li>
-                                <li><code>{senha}</code> - <?php echo $this->LANG['password_var']; ?></li>
-                                <li><code>{data_ativacao}</code> - <?php echo $this->LANG['activation_date_var']; ?></li>
-                                <li><code>{data_suspensao}</code> - <?php echo $this->LANG['suspension_date_var']; ?></li>
-                                <li><code>{data_reativacao}</code> - <?php echo $this->LANG['unsuspension_date_var']; ?></li>
-                                <li><code>{data_cancelamento}</code> - <?php echo $this->LANG['termination_date_var']; ?></li>
-                                <li><code>{motivo}</code> - <?php echo $this->LANG['suspension_reason_var']; ?></li>
-                            </ul>
-
-                            <!-- CANCELAMENTOS -->
-                            <h6><?php echo $this->LANG['cancellations']; ?>:</h6>
-                            <ul class="list-unstyled">
-                                <li><code>{razao_cancelamento}</code> - <?php echo $this->LANG['cancellation_reason_var']; ?></li>
-                                <li><code>{tipo_cancelamento}</code> - <?php echo $this->LANG['cancellation_type_var']; ?></li>
-                                <li><code>{data_solicitacao}</code> - <?php echo $this->LANG['request_date_var']; ?></li>
-                            </ul>
-
-                            <!-- COTAÇÕES -->
-                            <h6><?php echo $this->LANG['quotes']; ?>:</h6>
-                            <ul class="list-unstyled">
-                                <li><code>{numero_cotacao}</code> - <?php echo $this->LANG['quote_number_var']; ?></li>
-                                <li><code>{subject_cotacao}</code> - <?php echo $this->LANG['quote_subject_var']; ?></li>
-                                <li><code>{valor_cotacao}</code> - <?php echo $this->LANG['quote_value_var']; ?></li>
-                                <li><code>{validade_cotacao}</code> - <?php echo $this->LANG['quote_validity_var']; ?></li>
-                                <li><code>{status_cotacao}</code> - <?php echo $this->LANG['quote_status_var']; ?></li>
-                                <li><code>{itens_cotacao}</code> - <?php echo $this->LANG['quote_items_var']; ?></li>
-                                <li><code>{data_aceitacao}</code> - <?php echo $this->LANG['acceptance_date_var']; ?></li>
-                                <li><code>{alteracoes}</code> - <?php echo $this->LANG['changes_var']; ?></li>
-                            </ul>
-
-                            <!-- SISTEMA -->
-                            <h6><?php echo $this->LANG['system']; ?>:</h6>
-                            <ul class="list-unstyled">
-                                <li><code>{codigo_verificacao}</code> - <?php echo $this->LANG['verification_code_var']; ?></li>
-                                <li><code>{data_cadastro}</code> - <?php echo $this->LANG['registration_date_var']; ?></li>
-                                <li><code>{data_alteracao}</code> - <?php echo $this->LANG['modification_date_var']; ?></li>
-                                <li><code>{nova_senha}</code> - <?php echo $this->LANG['new_password_var']; ?></li>
-                                <li><code>{alteracoes}</code> - <?php echo $this->LANG['changes_var']; ?></li>
-                                <li><code>{tipo_servico}</code> - <?php echo $this->LANG['service_type_var']; ?></li>
-                                <li><code>{nome_produto}</code> - <?php echo $this->LANG['product_name_var']; ?></li>
-                            </ul>
-                        </div>
-                    </div>
-    
-                    <div class="card mt-3">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['template_statistics']; ?></h3>
-                        </div>
-                        <div class="card-body">
-                            <p><strong><?php echo $this->LANG['usage']; ?>:</strong> <?= $template->usage_count ?> <?php echo $this->LANG['times']; ?></p>
-                            <p><strong><?php echo $this->LANG['created_at']; ?>:</strong> <?= date('d/m/Y H:i', strtotime($template->created_at)) ?></p>
-                            <p><strong><?php echo $this->LANG['updated_at']; ?>:</strong> <?= date('d/m/Y H:i', strtotime($template->updated_at)) ?></p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-        <script>
-            $(document).ready(function() {
-                $('#saveTemplate').click(function() {
-                    var formData = $('#editTemplateForm').serializeArray();
-                    var dataObj = {};
-                    $.each(formData, function(i, field) {
-                        dataObj[field.name] = field.value;
-                    });
-                    
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: $.extend({subaction: 'update_template'}, dataObj),
-                        dataType: 'json',
-                        success: function(response) {
-                            if (response.success) {
-                                Swal.fire({
-                                    title: '<?php echo $this->LANG['success']; ?>!',
-                                    text: '<?php echo $this->LANG['template_updated']; ?>!',
-                                    icon: 'success',
-                                    confirmButtonText: 'OK'
-                                }).then(() => {
-                                    location.reload();
-                                });
-                            } else {
-                                Swal.fire({
-                                    title: '<?php echo $this->LANG['error']; ?>',
-                                    text: response.error || '<?php echo $this->LANG['unknown_error']; ?>',
-                                    icon: 'error',
-                                    confirmButtonText: 'OK'
-                                });
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: '<?php echo $this->LANG['error_saving_template']; ?>: ' + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-                
-                // ========== BARRA DE FERRAMENTAS DE FORMATO - EDIÇÃO ==========
-                
-                // Botões de formatação - Editar
-                $('.format-btn-edit').click(function() {
-                    var format = $(this).data('format');
-                    var textarea = document.getElementById('templateTextareaEdit');
-                    formatText(format, textarea);
-                });
-                
-                // Botão de emojis - Editar
-                $('#emojiPickerBtnEdit').click(function() {
-                    $('#emojiPanelEdit').slideToggle();
-                });
-                
-                // Inserir emoji ao clicar - Editar
-                $('.emoji-item-edit').click(function() {
-                    var emoji = $(this).text();
-                    var textarea = document.getElementById('templateTextareaEdit');
-                    var cursorPos = textarea.selectionStart;
-                    var textBefore = textarea.value.substring(0, cursorPos);
-                    var textAfter = textarea.value.substring(cursorPos);
-                    textarea.value = textBefore + emoji + textAfter;
-                    textarea.focus();
-                    textarea.setSelectionRange(cursorPos + emoji.length, cursorPos + emoji.length);
-                });
-                
-                // Função compartilhada de formatação
-                function formatText(format, textarea) {
-                    var start = textarea.selectionStart;
-                    var end = textarea.selectionEnd;
-                    var selectedText = textarea.value.substring(start, end);
-                    
-                    if (!selectedText) {
-                        Swal.fire({
-                            title: '<?php echo $this->LANG['warning']; ?>',
-                            text: '<?php echo $this->LANG['select_text_to_format']; ?>',
-                            icon: 'warning',
-                            confirmButtonText: 'OK'
-                        });
-                        return;
-                    }
-                    
-                    var formattedText = '';
-                    switch(format) {
-                        case 'bold':
-                            formattedText = '*' + selectedText + '*';
-                            break;
-                        case 'italic':
-                            formattedText = '_' + selectedText + '_';
-                            break;
-                        case 'strikethrough':
-                            formattedText = '~' + selectedText + '~';
-                            break;
-                        case 'monospace':
-                            formattedText = '```' + selectedText + '```';
-                            break;
-                    }
-                    
-                    textarea.value = textarea.value.substring(0, start) + formattedText + textarea.value.substring(end);
-                    textarea.focus();
-                    textarea.setSelectionRange(start, start + formattedText.length);
-                }
-            });
-        </script>
-        <?php
-        return ob_get_clean();
-    }
-    
-    /**
-     * Página de Estatísticas Detalhadas
-     */
-    private function statisticsPage()
-    {
-        $period = $_GET['period'] ?? 'month';
-        
-        // Estatísticas básicas - CORREÇÃO v2.0.1: Filtra logs de debug
-        $totalMessages = Capsule::table('mod_zapcel_logs')
-            ->where(function($query) {
-                $query->where('event_type', 'NOT LIKE', 'debug_%')
-                    ->where('event_type', '!=', 'gateway_manager_debug')
-                    ->where('event_type', '!=', 'system_log');
-            })
-            ->whereIn('success', [0, 1])
-            ->count();
-        
-        $successfulMessages = Capsule::table('mod_zapcel_logs')
-            ->where('success', 1)
-            ->where(function($query) {
-                $query->where('event_type', 'NOT LIKE', 'debug_%')
-                    ->where('event_type', '!=', 'gateway_manager_debug')
-                    ->where('event_type', '!=', 'system_log');
-            })
-            ->count();
-        
-        $failedMessages = Capsule::table('mod_zapcel_logs')
-            ->where('success', 0)
-            ->where(function($query) {
-                $query->where('event_type', 'NOT LIKE', 'debug_%')
-                    ->where('event_type', '!=', 'gateway_manager_debug')
-                    ->where('event_type', '!=', 'system_log');
-            })
-            ->count();
-        
-        $successRate = $totalMessages > 0 ? round(($successfulMessages / $totalMessages) * 100, 2) : 0;
-    
-        // Estatísticas por evento - CORREÇÃO v2.0.1: Filtra logs de debug
-        $eventStats = Capsule::table('mod_zapcel_logs')
-            ->select('event_type', 
-                    Capsule::raw('COUNT(*) as total_messages'),
-                    Capsule::raw('SUM(success) as successful_messages'),
-                    Capsule::raw('SUM(1 - success) as failed_messages'))
-            ->where(function($query) {
-                $query->where('event_type', 'NOT LIKE', 'debug_%')
-                    ->where('event_type', '!=', 'gateway_manager_debug')
-                    ->where('event_type', '!=', 'system_log');
-            })
-            ->groupBy('event_type')
-            ->get();
-    
-        ob_start();
-        ?>
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-6">
-                        <h2>
-                            <i class="fas fa-chart-pie mr-2"></i> 
-                            <?php echo $this->LANG['detailed_statistics']; ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['statistics_subtitle']; ?></p>
-                    </div>
-                    <div class="col-md-6 text-right">
-                        <div class="btn-group">
-                            <a href="addonmodules.php?module=zapcel&action=dashboard" class="btn btn-outline-secondary mr-2">
-                                <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back']; ?>
-                            </a>
-                            <div class="btn-group">
-                                <button type="button" class="btn btn-info dropdown-toggle" data-toggle="dropdown">
-                                    <?php echo $this->LANG['period']; ?>: <?= ucfirst($period) ?> <span class="caret"></span>
-                                </button>
-                                <ul class="dropdown-menu">
-                                    <li><a href="?module=zapcel&action=statistics&period=day"><?php echo $this->LANG['day']; ?></a></li>
-                                    <li><a href="?module=zapcel&action=statistics&period=week"><?php echo $this->LANG['week']; ?></a></li>
-                                    <li><a href="?module=zapcel&action=statistics&period=month"><?php echo $this->LANG['month']; ?></a></li>
-                                    <li><a href="?module=zapcel&action=statistics&period=year"><?php echo $this->LANG['year']; ?></a></li>
-                                </ul>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-    
-            <!-- Resumo -->
-            <div class="row">
-                <div class="col-md-3">
-                    <div class="small-box bg-primary">
-                        <div class="inner">
-                            <h3><?= number_format($totalMessages) ?></h3>
-                            <p><?php echo $this->LANG['total_messages']; ?></p>
-                        </div>
-                        <div class="icon">
-                            <i class="fas fa-envelope"></i>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="small-box bg-success">
-                        <div class="inner">
-                            <h3><?= $successRate ?>%</h3>
-                            <p><?php echo $this->LANG['success_rate']; ?></p>
-                        </div>
-                        <div class="icon">
-                            <i class="fas fa-chart-line"></i>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="small-box bg-info">
-                        <div class="inner">
-                            <h3><?= number_format($successfulMessages) ?></h3>
-                            <p><?php echo $this->LANG['successful_messages']; ?></p>
-                        </div>
-                        <div class="icon">
-                            <i class="fas fa-check-circle"></i>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="small-box bg-warning">
-                        <div class="inner">
-                            <h3><?= number_format($failedMessages) ?></h3>
-                            <p><?php echo $this->LANG['failed_messages']; ?></p>
-                        </div>
-                        <div class="icon">
-                            <i class="fas fa-exclamation-circle"></i>
-                        </div>
-                    </div>
-                </div>
-            </div>
-    
-            <!-- Estatísticas por Evento -->
-            <div class="row mt-4">
-                <div class="col-md-12">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['statistics_by_event_type']; ?></h3>
-                        </div>
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-striped">
-                                    <thead>
-                                        <tr>
-                                            <th><?php echo $this->LANG['event']; ?></th>
-                                            <th><?php echo $this->LANG['total']; ?></th>
-                                            <th><?php echo $this->LANG['successful_messages']; ?></th>
-                                            <th><?php echo $this->LANG['failed_messages']; ?></th>
-                                            <th><?php echo $this->LANG['rate']; ?></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($eventStats as $event): ?>
-                                        <tr>
-                                            <td><?= $this->getEventTypeDisplayName($event->event_type) ?></td>
-                                            <td><?= $event->total_messages ?></td>
-                                            <td><?= $event->successful_messages ?></td>
-                                            <td><?= $event->failed_messages ?></td>
-                                            <td>
-                                                <?php 
-                                                $eventRate = $event->total_messages > 0 ? 
-                                                    round(($event->successful_messages / $event->total_messages) * 100, 2) : 0;
-                                                ?>
-                                                <span class="badge bg-<?= $eventRate >= 90 ? 'success' : ($eventRate >= 80 ? 'warning' : 'danger') ?>">
-                                                    <?= $eventRate ?>%
-                                                </span>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <?php
-        return ob_get_clean();
-    }
-
-    /**
-     * Página de Validação WhatsApp
-     */
-    private function validationPage()
-    {
-        $validations = Capsule::table('mod_zapcel_validation as v')
-            ->join('tblclients as c', 'v.client_id', '=', 'c.id')
-            ->select('v.*', 'c.firstname', 'c.lastname', 'c.email', 'c.phonenumber')
-            ->orderBy('v.updated_at', 'desc')
-            ->get();
-
-        // Conta pendentes baseado no STATUS
-        $pendingCount = Capsule::table('mod_zapcel_validation')
-            ->where('status', 'pending')
-            ->count();
-
-        $today = date('Y-m-d');
-
-        // Total de clientes hoje (usa validações criadas hoje – evita depender de coluna desconhecida em tblclients)
-        $todayClients = Capsule::table('mod_zapcel_validation')
-            ->whereDate('created_at', $today)
-            ->distinct('client_id')
-            ->count('client_id');
-
-        // Validados hoje (status validated, marcados hoje em updated_at)
-        $todayValidated = Capsule::table('mod_zapcel_validation')
-            ->where('status', 'validated')
-            ->whereDate('updated_at', $today)
-            ->count();
-
-        // Pendentes hoje (novos pendentes criados hoje)
-        $todayPending = Capsule::table('mod_zapcel_validation')
-            ->where('status', 'pending')
-            ->whereDate('created_at', $today)
-            ->count();
-
-        // Invalidado hoje (blocked/expired/invalid, alterados hoje)
-        $todayInvalidated = Capsule::table('mod_zapcel_validation')
-            ->whereIn('status', ['blocked', 'expired', 'invalid'])
-            ->whereDate('updated_at', $today)
-            ->count();
-
-        ob_start();
-        ?>
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fas fa-mobile-alt mr-2"></i> 
-                            <?php echo $this->LANG['whatsapp_validation_title']; ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['validation_subtitle']; ?></p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <a href="addonmodules.php?module=zapcel&action=dashboard" class="btn btn-outline-secondary mr-2">
-                            <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back']; ?>
-                        </a>
-                        <?php if ($pendingCount > 0): ?>
-                        <button class="btn btn-warning" id="sendPendingValidations">
-                            <i class="fas fa-paper-plane mr-1"></i> <?php echo $this->LANG['send_pending']; ?> (<?= $pendingCount ?>)
-                        </button>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Cards de Status -->
-            <div class="row">
-                <!-- Total de Clientes -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-primary">
-                            <i class="fas fa-users"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['total_clients'] ?? 'Total de Clientes'; ?></span>
-                            <span class="info-box-number"><?= number_format(Capsule::table('tblclients')->count()) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-primary" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayClients) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['total_clients_desc'] ?? 'Clientes com tentativa de validação.' ?></small>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Validados -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-success">
-                            <i class="fas fa-check-circle"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['validated'] ?? 'Validados'; ?></span>
-                            <span class="info-box-number"><?= number_format(Capsule::table('mod_zapcel_validation')->where('status', 'validated')->count()) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-success" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayValidated) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['validated_desc'] ?? 'WhatsApp confirmado com sucesso.' ?></small>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Pendentes -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-warning">
-                            <i class="fas fa-clock"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['pending'] ?? 'Pendentes'; ?></span>
-                            <span class="info-box-number"><?= number_format(Capsule::table('mod_zapcel_validation')->where('status', 'pending')->count()) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-warning" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayPending) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['pending_desc'] ?? 'Aguardando confirmação do código.' ?></small>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Invalidado (bloqueado / expirado / inválido) -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon btn-danger">
-                            <i class="fas fa-times-circle"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['invalidated'] ?? 'Invalidado'; ?></span>
-                            <span class="info-box-number"><?= number_format(Capsule::table('mod_zapcel_validation')->whereIn('status', ['blocked', 'expired', 'invalid'])->count()) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar btn-danger" style="width: 100%; background-color: #d9534f;"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayInvalidated) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['invalidated_desc'] ?? 'Códigos expirados, inválidos ou bloqueados.' ?></small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-
-            <div class="row">
-                <div class="col-md-12">
-                    <div class="card">
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-striped table-hover" id="validationTable">
-                                    <thead>
-                                        <tr>
-                                            <th><?php echo $this->LANG['client']; ?></th>
-                                            <th><?php echo $this->LANG['phone']; ?></th>
-                                            <th><?php echo $this->LANG['status']; ?></th>
-                                            <th><?php echo $this->LANG['code']; ?></th>
-                                            <th><?php echo $this->LANG['attempts']; ?></th>
-                                            <th><?php echo $this->LANG['last_attempt']; ?></th>
-                                            <th width="120"><?php echo $this->LANG['actions']; ?></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($validations as $validation): ?>
-                                        <tr>
-                                            <td>
-                                                <strong><a style="text-decoration: none;" href="clientssummary.php?userid=<?= $validation->client_id ?>" target="_blank" title="<?= htmlspecialchars($validation->firstname . ' ' . $validation->lastname) ?>"><?= htmlspecialchars($validation->firstname) ?> <?= htmlspecialchars($validation->lastname) ?></strong>  
-
-                                                <small class="text-muted"><?= htmlspecialchars($validation->email) ?></small>
-                                            </td>
-                                            <td>
-                                                <?= htmlspecialchars($validation->phone_number) ?>
-                                            </td>
-                                            <td>
-                                                <?php switch($validation->status):
-                                                    case 'validated': ?>
-                                                        <span class="badge bg-success"><?php echo $this->LANG['validated']; ?></span>
-                                                        <?php break;
-                                                    case 'pending': ?>
-                                                        <span class="badge bg-warning"><?php echo $this->LANG['pending']; ?></span>
-                                                        <?php break;
-                                                    case 'blocked': ?>
-                                                        <span class="badge bg-danger"><?php echo $this->LANG['blocked']; ?></span>
-                                                        <?php break;
-                                                    case 'expired': ?>
-                                                        <span class="badge bg-secondary"><?php echo $this->LANG['expired']; ?></span>
-                                                        <?php break;
-                                                    case 'invalid': ?>
-                                                        <span class="badge bg-danger"><?php echo $this->LANG['invalidated']; ?></span>
-                                                        <?php break;
-                                                    default: ?>
-                                                        <span class="badge bg-secondary"><?php echo $this->LANG['not_started']; ?></span>
-                                                <?php endswitch; ?>
-                                            </td>
-                                            <td>
-                                                <?php if ($validation->verification_code): ?>
-                                                    <code><?= htmlspecialchars($validation->verification_code) ?></code>
-                                                <?php else: ?>
-                                                    <span class="text-muted">-</span>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td>
-                                                <span class="badge bg-info"><?= $validation->attempts ?></span>
-                                            </td>
-                                            <td>
-                                                <small class="text-muted">
-                                                    <?= $validation->updated_at ? date('d/m/Y H:i', strtotime($validation->updated_at)) : '-' ?>
-                                                </small>
-                                            </td>
-                                            <td>
-                                                <div class="btn-group btn-group-sm">
-                                                    <?php if ($validation->status == 'pending'): ?>
-                                                    <button class="btn btn-success resend-validation" 
-                                                            data-clientid="<?= $validation->client_id ?>" 
-                                                            title="<?php echo $this->LANG['resend_code']; ?>">
-                                                        <i class="fas fa-redo"></i>
-                                                    </button>
-                                                    <?php endif; ?>
-                                                    <button class="btn btn-info view-validation" 
-                                                            data-clientid="<?= $validation->client_id ?>" 
-                                                            title="<?php echo $this->LANG['view_details']; ?>">
-                                                        <i class="fas fa-eye"></i>
-                                                    </button>
-                                                    <button class="btn btn-danger reset-validation" 
-                                                            data-clientid="<?= $validation->client_id ?>"
-                                                            data-name="<?= htmlspecialchars($validation->firstname) ?> <?= htmlspecialchars($validation->lastname) ?>"
-                                                            title="<?php echo $this->LANG['reset_validation']; ?>">
-                                                        <i class="fas fa-sync"></i>
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Modal Detalhes Validação -->
-        <div class="modal fade" id="validationDetailsModal" tabindex="-1" role="dialog">
-            <div class="modal-dialog modal-lg" role="document">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h1 class="modal-title"><?php echo $this->LANG['validation_details']; ?></h1>
-                        <button type="button" class="close" data-dismiss="modal">&times;</button>
-                    </div>
-                    <div class="modal-body" id="validationDetailsContent">
-                        <!-- Conteúdo carregado via AJAX -->
-                        <div class="text-center py-5">
-                            <i class="fas fa-spinner fa-spin fa-3x text-primary"></i>
-                            <p class="mt-3 text-muted"><?php echo $this->LANG['loading']; ?>...</p>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-dismiss="modal">
-                            <i class="fas fa-times mr-1"></i>
-                            <?php echo $this->LANG['close']; ?>
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <style>
-
-        #validationDetailsModal .modal-content {
-            border: none;
-            border-radius: 15px;
-            overflow: hidden;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        }
-
-        #validationDetailsModal .validation-info-box {
-            background: #f8f9fa;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 15px;
-            border-left: 4px solid #667eea;
-        }
-
-        #validationDetailsModal .validation-info-box.success {
-            border-left-color: #28a745;
-            background: #d4edda;
-        }
-
-        #validationDetailsModal .validation-info-box.warning {
-            border-left-color: #ffc107;
-            background: #fff3cd;
-        }
-
-        #validationDetailsModal .validation-info-box.danger {
-            border-left-color: #dc3545;
-            background: #f8d7da;
-        }
-
-        #validationDetailsModal .validation-label {
-            font-weight: 600;
-            color: #495057;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 5px;
-        }
-
-        #validationDetailsModal .validation-value {
-            font-size: 16px;
-            color: #212529;
-            font-weight: 500;
-        }
-
-        #validationDetailsModal .status-badge {
-            display: inline-block;
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-weight: 600;
-            font-size: 14px;
-        }
-
-        #validationDetailsModal .status-badge.validated {
-            background: #28a745;
-            color: white;
-        }
-
-        #validationDetailsModal .status-badge.pending {
-            background: #ffc107;
-            color: #212529;
-        }
-
-        #validationDetailsModal .status-badge.blocked {
-            background: #dc3545;
-            color: white;
-        }
-
-        #validationDetailsModal .status-badge.expired {
-            background: #6c757d;
-            color: white;
-        }
-        </style>
-
-        <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-        <script>
-            $(document ).ready(function() {
-                // DataTable
-                $('#validationTable').DataTable({
-                    order: [[5, 'desc']], // Ordena por "Última Tentativa" decrescente
-                    pageLength: 25,
-                    language: {
-                        url: '//cdn.datatables.net/plug-ins/1.13.7/i18n/pt-BR.json'
-                    }
-                });
-                // Reenviar código de validação
-                $('.resend-validation').click(function() {
-                    var clientId = $(this).data('clientid');
-                    
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: {
-                            subaction: 'resend_validation',
-                            client_id: clientId
-                        },
-                        dataType: 'json',
-                        success: function(response) {
-                            if (response.success) {
-                                Swal.fire({
-                                    title: '<?php echo $this->LANG['code_resent']; ?>',
-                                    text: '<?php echo $this->LANG['code_resent_success']; ?>!',
-                                    icon: 'success',
-                                    confirmButtonText: 'OK'
-                                });
-                                location.reload();
-                            } else {
-                                Swal.fire({
-                                    title: '<?php echo $this->LANG['error']; ?>',
-                                    text: response.error,
-                                    icon: 'error',
-                                    confirmButtonText: 'OK'
-                                });
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-
-                // Ver detalhes da validação
-                $('.view-validation').click(function() {
-                    var clientId = $(this).data('clientid');
-                    
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: {
-                            subaction: 'get_validation_details',
-                            client_id: clientId
-                        },
-                        dataType: 'json',
-                        success: function(response) {
-                            if (response.success) {
-                                $('#validationDetailsContent').html(response.html);
-                                $('#validationDetailsModal').modal('show');
-                            } else {
-                                Swal.fire({
-                                    title: '<?php echo $this->LANG['error']; ?>',
-                                    text: response.error,
-                                    icon: 'error',
-                                    confirmButtonText: 'OK'
-                                });
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-
-                // Resetar validação
-                $('.reset-validation').click(function() {
-                    var clientId = $(this).data('clientid');
-                    var clientName = $(this).data('name');
-                    
-                    Swal.fire({
-                        title: '<?php echo $this->LANG['confirm_reset_validation']; ?>'.replace('%s', clientName),
-                        text: '<?php echo $this->LANG['reset_validation_warning']; ?>',
-                        icon: 'warning',
-                        showCancelButton: true,
-                        confirmButtonText: '<?php echo $this->LANG['reset_validation']; ?>',
-                        cancelButtonText: '<?php echo $this->LANG['cancel']; ?>',
-                        confirmButtonColor: '#d33',
-                        cancelButtonColor: '#3085d6',
-                        reverseButtons: true
-                    }).then((result) => {
-                        if (result.isConfirmed) {
-                            $.ajax({
-                                url: 'addonmodules.php?module=zapcel&action=ajax',
-                                type: 'POST',
-                                data: {
-                                    subaction: 'reset_validation',
-                                    client_id: clientId
-                                },
-                                dataType: 'json',
-                                success: function(response) {
-                                    if (response.success) {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['validation_reset']; ?>',
-                                            text: '<?php echo $this->LANG['validation_reset_success']; ?>!',
-                                            icon: 'success',
-                                            confirmButtonText: 'OK'
-                                        });
-                                        location.reload();
-                                    } else {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['error']; ?>',
-                                            text: response.error,
-                                            icon: 'error',
-                                            confirmButtonText: 'OK'
-                                        });
-                                    }
-                                },
-                                error: function(xhr, status, error) {
-                                    console.error('Erro AJAX:', xhr.responseText);
-                                    Swal.fire({
-                                        title: '<?php echo $this->LANG['error']; ?>',
-                                        text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                        icon: 'error',
-                                        confirmButtonText: 'OK'
-                                    });
-                                }
-                            });
-                        }
-                    });
-                });
-
-                // Enviar validações pendentes
-                $('#sendPendingValidations').click(function() {
-                    Swal.fire({
-                        title: '<?php echo $this->LANG['confirm_send_pending_validations']; ?>',
-                        text: '<?php echo $this->LANG['send_pending_validations_warning']; ?>',
-                        icon: 'question',
-                        showCancelButton: true,
-                        confirmButtonText: '<?php echo $this->LANG['send_pending']; ?>',
-                        cancelButtonText: '<?php echo $this->LANG['cancel']; ?>',
-                        confirmButtonColor: '#f0ad4e',
-                        cancelButtonColor: '#3085d6',
-                        reverseButtons: true
-                    }).then((result) => {
-                        if (result.isConfirmed) {
-                            // Desabilita o botão e mostra loading
-                            $('#sendPendingValidations').prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> <?php echo $this->LANG['sending']; ?>...');
-                            
-                            $.ajax({
-                                url: 'addonmodules.php?module=zapcel&action=ajax',
-                                type: 'POST',
-                                data: {
-                                    subaction: 'send_pending_validations'
-                                },
-                                dataType: 'json',
-                                success: function(response) {
-                                    // Reabilita o botão
-                                    $('#sendPendingValidations').prop('disabled', false).html('<i class="fas fa-paper-plane"></i> <?php echo $this->LANG['send_pending']; ?>');
-                                    
-                                    if (response.success) {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['validations_sent']; ?>',
-                                            text: response.message,
-                                            icon: 'success',
-                                            confirmButtonText: 'OK'
-                                        });
-                                        location.reload();
-                                    } else {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['error']; ?>',
-                                            text: response.error,
-                                            icon: 'error',
-                                            confirmButtonText: 'OK'
-                                        });
-                                    }
-                                },
-                                error: function(xhr, status, error) {
-                                    // Reabilita o botão
-                                    $('#sendPendingValidations').prop('disabled', false).html('<i class="fas fa-paper-plane"></i> <?php echo $this->LANG['send_pending']; ?>');
-                                    
-                                    console.error('Erro AJAX:', xhr.responseText);
-                                    Swal.fire({
-                                        title: '<?php echo $this->LANG['error']; ?>',
-                                        text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                        icon: 'error',
-                                        confirmButtonText: 'OK'
-                                    });
-                                }
-                            });
-                        }
-                    });
-                });
-
-            });
-            // Filtro de busca na tabela
-            $('#searchValidation').on('keyup', function() {
-                var value = $(this).val().toLowerCase();
-                $('.table tbody tr').filter(function() {
-                    $(this).toggle($(this).text().toLowerCase().indexOf(value) > -1);
-                });
-            });
-        </script>
-        <?php
-        return ob_get_clean();
-    }
-
-    /**
-     * Página de Gateways de Pagamento - VERSÃO FINAL COM MODAL E LOGOS
-     */
-    private function gatewaysPage()
-    {
-        // Busca gateway ativo configurado
-        $activeGateway = Capsule::table('tbladdonmodules')
-            ->where('module', 'zapcel')
-            ->where('setting', 'zapcel_active_gateway')
-            ->value('value') ?? 'none';
-        
-        // Escaneia pasta gateways/ para encontrar gateways disponíveis
-        $gatewayPath = __DIR__ . '/../gateways/';
-        $availableGateways = [];
-        
-        // Logos dos gateways (usando Font Awesome ou URLs)
-        $gatewayLogos = [
-            'iugupix' => 'fas fa-credit-card',
-            'mercadopago' => 'fas fa-shopping-cart',
-            'paghiper' => 'fas fa-barcode',
-            'pagseguro' => 'fas fa-shield-alt',
-            'inter' => 'fas fa-university',
-            'bs2' => 'fas fa-building',
-            'asaas' => 'fas fa-money-check-alt',
-        ];
-        
-        // Cores dos gateways
-        $gatewayColors = [
-            'iugupix' => '#6C5CE7',
-            'mercadopago' => '#00AEEF',
-            'paghiper' => '#FF6B35',
-            'pagseguro' => '#FFC700',
-            'inter' => '#FF6600',
-            'bs2' => '#00A859',
-            'asaas' => '#1E88E5',
-        ];
-        
-        if (is_dir($gatewayPath)) {
-            $files = glob($gatewayPath . '*Gateway.php');
-            
-            foreach ($files as $file) {
-                $filename = basename($file);
-                
-                // Ignora arquivos de interface/abstract
-                if (in_array($filename, ['GatewayInterface.php', 'AbstractGateway.php'])) {
-                    continue;
-                }
-                
-                // Extrai informações do gateway
-                $className = str_replace('.php', '', $filename);
-                $gatewayId = strtolower(str_replace('Gateway', '', $className));
-                $displayName = str_replace('Gateway', '', $className);
-                
-                // Define logo e cor
-                $logo = $gatewayLogos[$gatewayId] ?? 'fas fa-plug';
-                $color = $gatewayColors[$gatewayId] ?? '#6c757d';
-                
-                $availableGateways[$gatewayId] = [
-                    'id' => $gatewayId,
-                    'name' => $displayName,
-                    'file' => $filename,
-                    'logo' => $logo,
-                    'color' => $color,
-                    'active' => ($activeGateway === $gatewayId)
-                ];
-            }
-        }
-        
-        // Ordena por nome
-        uasort($availableGateways, function($a, $b) {
-            return strcmp($a['name'], $b['name']);
-        });
-
-        ob_start();
-        ?>
-        <style>
-        .gateway-card {
-            transition: all 0.3s ease;
-            cursor: pointer;
-            border-radius: 12px;
-            overflow: hidden;
-        }
-        .gateway-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 8px 20px rgba(0,0,0,0.15) !important;
-        }
-        .gateway-card.active {
-            border: 3px solid #28a745 !important;
-            box-shadow: 0 0 20px rgba(40, 167, 69, 0.3) !important;
-        }
-        .gateway-card-header {
-            padding: 20px;
-            background: var(--gateway-color);
-            color: white;
-            border: none !important;
-        }
-        .gateway-logo {
-            width: 60px;
-            height: 60px;
-            border-radius: 12px;
-            background: rgba(255,255,255,0.2);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 28px;
-            margin-bottom: 15px;
-            backdrop-filter: blur(10px);
-        }
-        .gateway-name {
-            font-size: 20px;
-            font-weight: 600;
-            margin: 0;
-            color: white;
-        }
-        .gateway-badge {
-            position: absolute;
-            top: 15px;
-            right: 15px;
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            background: #28a745;
-            color: white;
-            box-shadow: 0 2px 8px rgba(40, 167, 69, 0.4);
-        }
-        .custom-radio-gateway {
-            transform: scale(1.3);
-            cursor: pointer;
-        }
-        .alert-gateway-status {
-            border-radius: 12px;
-            border-left: 4px solid;
-            padding: 20px;
-            margin-bottom: 30px;
-        }
-        .tutorial-modal .modal-content {
-            border-radius: 15px;
-            border: none;
-        }
-        .tutorial-modal .modal-header {
-            //background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border-radius: 15px 15px 0 0;
-            padding: 25px 30px;
-        }
-        .tutorial-modal .modal-body {
-            padding: 30px;
-            max-height: 70vh;
-            overflow-y: auto;
-        }
-        .tutorial-step {
-            background: #f8f9fa;
-            border-left: 4px solid #667eea;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-radius: 8px;
-        }
-        .tutorial-step h4 {
-            color: #667eea;
-            margin-bottom: 15px;
-        }
-        .code-block {
-            background: #2d3748;
-            color: #e2e8f0;
-            padding: 20px;
-            border-radius: 8px;
-            overflow-x: auto;
-            font-family: 'Courier New', monospace;
-            font-size: 13px;
-            line-height: 1.6;
-            white-space: pre;      /* Preserva quebras de linha e espaços */
-            word-wrap: normal;     /* Não quebra palavras */
-        }
-        </style>
-
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fas fa-credit-card mr-2"></i> 
-                            <?php echo $this->LANG['payment_gateways']; ?>
-                        </h2>
-                        <p class="text-muted">
-                            <?php echo zapcel_trans('gateways_subtitle_new'); ?>
-                        </p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <button class="btn btn-primary mr-2" data-toggle="modal" data-target="#tutorialModal">
-                            <i class="fas fa-book mr-1"></i> <?php echo zapcel_trans('how_to_create_gateway'); ?>
-                        </button>
-                        <a href="addonmodules.php?module=zapcel&action=dashboard" class="btn btn-outline-secondary">
-                            <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back']; ?>
-                        </a>
-                    </div>
-                </div>
-            </div>
-
-            <?php if (empty($availableGateways)): ?>
-            <!-- Nenhum gateway encontrado -->
-            <div class="alert alert-info alert-gateway-status" style="border-left-color: #17a2b8;">
-                <i class="fas fa-info-circle mr-2" style="font-size: 24px;"></i>
-                <strong><?php echo zapcel_trans('no_gateways_found'); ?></strong><br>
-                <?php echo zapcel_trans('no_gateways_description'); ?>
-                <button class="btn btn-sm btn-info mt-2" data-toggle="modal" data-target="#tutorialModal">
-                    <i class="fas fa-graduation-cap mr-1"></i> <?php echo zapcel_trans('learn_how_to_create'); ?>
-                </button>
-            </div>
-            <?php else: ?>
-            
-            <!-- Gateway Ativo Atual -->
-            <div class="alert alert-gateway-status <?php echo ($activeGateway !== 'none') ? 'alert-success' : 'alert-warning'; ?>" 
-                    style="border-left-color: <?php echo ($activeGateway !== 'none') ? '#28a745' : '#ffc107'; ?>;">
-                <i class="fas fa-<?php echo ($activeGateway !== 'none') ? 'check-circle' : 'exclamation-triangle'; ?> mr-2" style="font-size: 28px;"></i>
-                <span style="font-size: 28px; font-weight: 400;">  <?php echo zapcel_trans('active_gateway'); ?>:</span>
-                <?php if ($activeGateway !== 'none'): ?>
-                    <span style="font-size: 28px; font-weight: 600;">
-                        <?php echo isset($availableGateways[$activeGateway]) ? $availableGateways[$activeGateway]['name'] : $activeGateway; ?>
-                    </span>
-                <?php else: ?>
-                    <span style="font-size: 28px; font-weight: 600;"><?php echo zapcel_trans('none_selected'); ?></span>
-                <?php endif; ?>
-            </div>
-
-            <!-- Lista de Gateways -->
-            <div class="row">
-                <!-- Opção: Nenhum (desativado) -->
-                <div class="col-md-4 mb-4">
-                    <div class="card gateway-card <?php echo ($activeGateway === 'none') ? 'active' : ''; ?>" 
-                            style="--gateway-color: #6c757d; --gateway-color-dark: #5a6268;">
-                        <div class="gateway-card-header position-relative">
-                            <?php if ($activeGateway === 'none'): ?>
-                            <span class="gateway-badge">
-                                <i class="fas fa-check mr-1"></i> <?php echo zapcel_trans('active'); ?>
-                            </span>
-                            <?php endif; ?>
-                            <div class="gateway-logo">
-                                <i class="fas fa-ban"></i>
-                            </div>
-                            <h5 class="gateway-name"><?php echo zapcel_trans('none_disabled'); ?></h5>
-                        </div>
-                        <div class="card-body">
-                            <div class="custom-control custom-radio">
-                                <input type="radio" 
-                                        id="gateway_none" 
-                                        name="active_gateway" 
-                                        value="none" 
-                                        class="custom-control-input custom-radio-gateway gateway-radio"
-                                        <?php echo ($activeGateway === 'none') ? 'checked' : ''; ?>>
-                                <label class="custom-control-label" for="gateway_none">
-                                    <strong><?php echo zapcel_trans('no_gateway_description'); ?></strong>
-                                </label>
-                            </div>
-                            <div class="small text-muted">
-                                <i class="fas fa-file-code mr-1"></i> <?php echo zapcel_trans('file_none'); ?>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Gateways Disponíveis -->
-                <?php foreach ($availableGateways as $gateway): ?>
-                <div class="col-md-4 mb-4">
-                    <div class="card gateway-card <?php echo $gateway['active'] ? 'active' : ''; ?>" 
-                            style="--gateway-color: <?php echo $gateway['color']; ?>;">
-                        <div class="gateway-card-header position-relative">
-                            <?php if ($gateway['active']): ?>
-                            <span class="gateway-badge">
-                                <i class="fas fa-check mr-1"></i> <?php echo zapcel_trans('active'); ?>
-                            </span>
-                            <?php endif; ?>
-                            <div class="gateway-logo">
-                                <i class="<?php echo $gateway['logo']; ?>"></i>
-                            </div>
-                            <h5 class="gateway-name"><?php echo $gateway['name']; ?></h5>
-                        </div>
-                        <div class="card-body">
-                            <div class="custom-control custom-radio mb-3">
-                                <input type="radio" 
-                                        id="gateway_<?php echo $gateway['id']; ?>" 
-                                        name="active_gateway" 
-                                        value="<?php echo $gateway['id']; ?>" 
-                                        class="custom-control-input custom-radio-gateway gateway-radio"
-                                        <?php echo $gateway['active'] ? 'checked' : ''; ?>>
-                                <label class="custom-control-label" for="gateway_<?php echo $gateway['id']; ?>">
-                                    <strong><?php echo zapcel_trans('select_this_gateway'); ?></strong>
-                                </label>
-                            </div>
-                            <div class="small text-muted">
-                                <i class="fas fa-file-code mr-1"></i> <?php echo $gateway['file']; ?>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-
-            <!-- Informações de Variáveis -->
-            <div class="card mt-4" style="border-radius: 12px; border: none; box-shadow: 0 2px 10px rgba(0,0,0,0.08);">
-                <div class="card-header" style="background-color: #667eea; color: white; border-radius: 12px 12px 0 0;">
-                    <h3 class="card-title mb-0">
-                        <i class="fas fa-code mr-2"></i>
-                        <?php echo zapcel_trans('available_variables'); ?>
-                    </h3>
-                </div>
-                <div class="card-body p-4">
-                    <div class="row">
-                        <div class="col-md-6">
-                            <h5 class="mb-3"><i class="fas fa-qrcode mr-2 text-primary"></i> PIX</h5>
-                            <ul class="list-unstyled">
-                                <li class="mb-2">
-                                    <code style="background: #f8f9fa; padding: 4px 8px; border-radius: 4px;">{codigopix}</code>
-                                    <span class="ml-2 text-muted"><?php echo zapcel_trans('var_codigopix'); ?></span>
-                                </li>
-                                <li class="mb-2">
-                                    <code style="background: #f8f9fa; padding: 4px 8px; border-radius: 4px;">{qr_code_url}</code>
-                                    <span class="ml-2 text-muted"><?php echo zapcel_trans('var_qr_code_url'); ?></span>
-                                </li>
-                            </ul>
-                        </div>
-                        <div class="col-md-6">
-                            <h5 class="mb-3"><i class="fas fa-barcode mr-2 text-success"></i> Boleto</h5>
-                            <ul class="list-unstyled">
-                                <li class="mb-2">
-                                    <code style="background: #f8f9fa; padding: 4px 8px; border-radius: 4px;">{linhadigitavel}</code>
-                                    <span class="ml-2 text-muted"><?php echo zapcel_trans('var_linhadigitavel'); ?></span>
-                                </li>
-                                <li class="mb-2">
-                                    <code style="background: #f8f9fa; padding: 4px 8px; border-radius: 4px;">{link_fatura}</code>
-                                    <span class="ml-2 text-muted"><?php echo zapcel_trans('var_link_fatura'); ?></span>
-                                </li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Modal Tutorial INTERNACIONALIZADO -->
-        <div class="modal fade tutorial-modal" id="tutorialModal" tabindex="-1" role="dialog">
-            <div class="modal-dialog modal-xl" role="document">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h1 class="modal-title">
-                            <?php echo zapcel_trans('tutorial_title'); ?>
-                        </h1>
-                        <button type="button" class="close text-white" data-dismiss="modal">
-                            <span>&times;</span>
-                        </button>
-                    </div>
-                    <div class="modal-body">
-                        <!-- Passo 1 -->
-                        <div class="tutorial-step">
-                            <h4><i class="fas fa-file-code mr-2"></i> <?php echo zapcel_trans('tutorial_step1_title'); ?></h4>
-                            <p><?php echo zapcel_trans('tutorial_step1_desc'); ?></p>
-                            <ul>
-                                <li><?php echo zapcel_trans('tutorial_step1_ex1'); ?></li>
-                                <li><?php echo zapcel_trans('tutorial_step1_ex2'); ?></li>
-                                <li><?php echo zapcel_trans('tutorial_step1_ex3'); ?></li>
-                            </ul>
-                        </div>
-
-                        <!-- Passo 2 -->
-                        <div class="tutorial-step">
-                            <h4><i class="fas fa-code mr-2"></i> <?php echo zapcel_trans('tutorial_step2_title'); ?></h4>
-                            <p><?php echo zapcel_trans('tutorial_step2_desc'); ?></p>
-                            <div class="code-block">
-&lt;?php
-
-namespace WHMCS\Module\Addon\Zapcel\Gateways;
-
-use Illuminate\Database\Capsule\Manager as Capsule;
-
-class <?php echo zapcel_trans('tutorial_code_classname'); ?> extends AbstractGateway
-{
-    protected $gatewayName = '<?php echo zapcel_trans('tutorial_code_gatewayname'); ?>';
-
-    public function extractPixData($invoiceId)
-    {
-        // <?php echo zapcel_trans('tutorial_code_comment_pix'); ?>
-        
-        $pixData = Capsule::table('<?php echo zapcel_trans('tutorial_code_table_pix'); ?>')
-            ->where('invoice_id', $invoiceId)
-            ->first();
-
-        if (!$pixData) {
-            return null;
-        }
-
-        return [
-            'qrcode' => $pixData->qr_code_url,
-            'copiaecola' => $pixData->pix_code,
-        ];
-    }
-
-    public function extractBoletoData($invoiceId)
-    {
-        // <?php echo zapcel_trans('tutorial_code_comment_boleto'); ?>
-        
-        $boletoData = Capsule::table('<?php echo zapcel_trans('tutorial_code_table_boleto'); ?>')
-            ->where('invoice_id', $invoiceId)
-            ->first();
-
-        if (!$boletoData) {
-            return null;
-        }
-
-        return [
-            'linha_digitavel' => $boletoData->linha_digitavel,
-            'pdf_url' => $boletoData->pdf_url,
-        ];
-    }
-}
-                            </div>
-                        </div>
-
-                        <!-- Passo 3 -->
-                        <div class="tutorial-step">
-                            <h4><i class="fas fa-database mr-2"></i> <?php echo zapcel_trans('tutorial_step3_title'); ?></h4>
-                            <p><?php echo zapcel_trans('tutorial_step3_desc'); ?></p>
-                            <div class="code-block">
--- <?php echo zapcel_trans('tutorial_sql_comment1'); ?>
-SHOW TABLES LIKE '%<?php echo zapcel_trans('tutorial_code_gatewayname'); ?>%';
-
--- <?php echo zapcel_trans('tutorial_sql_comment2'); ?>
-DESCRIBE mod_<?php echo zapcel_trans('tutorial_code_gatewayname'); ?>_pix;
-
--- <?php echo zapcel_trans('tutorial_sql_comment3'); ?>
-SELECT * FROM mod_<?php echo zapcel_trans('tutorial_code_gatewayname'); ?>_pix WHERE invoice_id = 123;
-                            </div>
-                        </div>
-
-                        <!-- Passo 4 -->
-                        <div class="tutorial-step">
-                            <h4><i class="fas fa-check-circle mr-2"></i> <?php echo zapcel_trans('tutorial_step4_title'); ?></h4>
-                            <p><?php echo zapcel_trans('tutorial_step4_desc'); ?></p>
-                            <ol>
-                                <li><?php echo zapcel_trans('tutorial_step4_item1'); ?></li>
-                                <li><?php echo zapcel_trans('tutorial_step4_item2'); ?></li>
-                                <li><?php echo zapcel_trans('tutorial_step4_item3'); ?></li>
-                                <li><?php echo zapcel_trans('tutorial_step4_item4'); ?></li>
-                            </ol>
-                        </div>
-
-                        <!-- Dicas -->
-                        <div class="alert alert-info">
-                            <h5><i class="fas fa-lightbulb mr-2"></i> <?php echo zapcel_trans('tutorial_tips_title'); ?></h5>
-                            <ul class="mb-0">
-                                <li><?php echo zapcel_trans('tutorial_tip1'); ?></li>
-                                <li><?php echo zapcel_trans('tutorial_tip2'); ?></li>
-                                <li><?php echo zapcel_trans('tutorial_tip3'); ?></li>
-                                <li><?php echo zapcel_trans('tutorial_tip4'); ?></li>
-                            </ul>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-dismiss="modal">
-                            <i class="fas fa-times mr-1"></i> <?php echo zapcel_trans('close'); ?>
-                        </button>
-                        <a href="https://www.hostcel.com.br/tutoriais/como-criar-seu-gateway-personalizado-para-o-zapcel-whmcs/" target="_blank" class="btn btn-primary">
-                            <i class="fas fa-book mr-1"></i> <?php echo zapcel_trans('tutorial_full_docs'); ?>
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <script>
-        $(document).ready(function() {
-            // Ao selecionar um gateway
-            $('.gateway-radio').on('change', function() {
-                const selectedGateway = $(this).val();
-                const $radio = $(this);
-                
-                // Confirmação
-                Swal.fire({
-                    title: '<?php echo zapcel_trans('confirm_change_gateway'); ?>',
-                    text: '<?php echo zapcel_trans('confirm_change_gateway_text'); ?>',
-                    icon: 'question',
-                    showCancelButton: true,
-                    confirmButtonText: '<?php echo zapcel_trans('yes_change'); ?>',
-                    cancelButtonText: '<?php echo zapcel_trans('cancel'); ?>',
-                    confirmButtonColor: '#28a745',
-                    cancelButtonColor: '#6c757d'
-                }).then((result) => {
-                    if (result.isConfirmed) {
-                        // Salvar via AJAX
-                        $.ajax({
-                            url: 'addonmodules.php?module=zapcel&action=ajax',
-                            method: 'POST',
-                            data: {
-                                subaction: 'set_active_gateway',
-                                gateway: selectedGateway
-                            },
-                            dataType: 'json',
-                            success: function(response) {
-                                if (response.success) {
-                                    Swal.fire({
-                                        icon: 'success',
-                                        title: '<?php echo zapcel_trans('success'); ?>',
-                                        text: response.message,
-                                        timer: 2000,
-                                        showConfirmButton: false
-                                    }).then(() => {
-                                        window.location.reload();
-                                    });
-                                } else {
-                                    Swal.fire({
-                                        icon: 'error',
-                                        title: '<?php echo zapcel_trans('error'); ?>',
-                                        text: response.error || '<?php echo zapcel_trans('unknown_error'); ?>'
-                                    });
-                                    $radio.prop('checked', false);
-                                    $('input[name="active_gateway"][value="<?php echo $activeGateway; ?>"]').prop('checked', true);
-                                }
-                            },
-                            error: function() {
-                                Swal.fire({
-                                    icon: 'error',
-                                    title: '<?php echo zapcel_trans('error'); ?>',
-                                    text: '<?php echo zapcel_trans('connection_error'); ?>'
-                                });
-                                $radio.prop('checked', false);
-                                $('input[name="active_gateway"][value="<?php echo $activeGateway; ?>"]').prop('checked', true);
-                            }
-                        });
-                    } else {
-                        $radio.prop('checked', false);
-                        $('input[name="active_gateway"][value="<?php echo $activeGateway; ?>"]').prop('checked', true);
-                    }
-                });
-            });
-
-            // Click no card seleciona o radio
-            $('.gateway-card').on('click', function() {
-                $(this).find('input[type="radio"]').trigger('click');
-            });
-        });
-        </script>
-        <?php
-        return ob_get_clean();
-    }
-
-    /**
-     * Página de Logs do Sistema - CORRIGIDA
-     */
-    private function logsPage()
-    {
-        // Filtros
-        $eventType = $_GET['type'] ?? '';
-        $dateFrom = $_GET['date_from'] ?? '';
-        $dateTo = $_GET['date_to'] ?? '';
-        $status = $_GET['status'] ?? '';
-
-        // Query base com filtros
-        $query = Capsule::table('mod_zapcel_logs as l')
-            ->leftJoin('tblclients as c', 'l.client_id', '=', 'c.id')
-            ->select('l.*', 'c.firstname', 'c.lastname', 'c.email')
-            ->orderBy('l.created_at', 'desc');
-
-        // Aplica filtros
-        if ($eventType) {
-            $query->where('l.event_type', $eventType);
-        }
-
-        if ($dateFrom) {
-            $query->whereDate('l.created_at', '>=', $dateFrom);
-        }
-
-        if ($dateTo) {
-            $query->whereDate('l.created_at', '<=', $dateTo);
-        }
-
-        if ($status !== '') {
-            $query->where('l.success', $status);
-        }
-
-        // Obtém TODOS os logs (DataTables faz a paginação no frontend)
-        $logs = $query->limit(1000)->get();
-
-        // Tipos de eventos para filtro
-        $eventTypes = Capsule::table('mod_zapcel_logs')
-            ->distinct()
-            ->pluck('event_type')
-            ->toArray();
-
-        ob_start();
-    ?>
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fas fa-list-alt mr-2"></i> 
-                            <?php echo $this->LANG['system_logs']; ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['logs_subtitle']; ?></p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <a href="addonmodules.php?module=zapcel&action=dashboard" class="btn btn-outline-secondary mr-2">
-                            <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back']; ?>
-                        </a>
-                        <div class="btn-group">
-                            <button class="btn btn-info" id="refreshLogs">
-                                <i class="fas fa-sync mr-1"></i> <?php echo $this->LANG['refresh']; ?>
-                            </button>
-                            <button class="btn btn-danger" id="clearLogs">
-                                <i class="fas fa-trash mr-1"></i> <?php echo $this->LANG['clear_logs']; ?>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Filtros -->
-            <div class="row">
-                <div class="col-md-12">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['filters']; ?></h3>
-                        </div>
-                        <div class="card-body">
-                            <form id="logsFilterForm" method="get" action="addonmodules.php">
-                                <input type="hidden" name="module" value="zapcel">
-                                <input type="hidden" name="action" value="logs">
-                                
-                                <div class="row align-items-end">
-                                    <div class="col-md-3 mb-3">
-                                        <label for="type"><?php echo $this->LANG['event_type']; ?>:</label>
-                                        <select name="type" id="type" class="form-control">
-                                            <option value=""><?php echo $this->LANG['all_types']; ?></option>
-                                            <?php foreach ($eventTypes as $type): ?>
-                                            <option value="<?= $type ?>" <?= $eventType === $type ? 'selected' : '' ?>>
-                                                <?= $this->getEventTypeDisplayName($type) ?>
-                                            </option>
-                                            <?php endforeach; ?>
-                                        </select>
-                                    </div>
-                                    
-                                    <div class="col-md-2 mb-3">
-                                        <label for="status"><?php echo $this->LANG['status']; ?>:</label>
-                                        <select name="status" id="status" class="form-control">
-                                            <option value=""><?php echo $this->LANG['all_statuses']; ?></option>
-                                            <option value="1" <?= $status === '1' ? 'selected' : '' ?>><?php echo $this->LANG['success']; ?></option>
-                                            <option value="0" <?= $status === '0' ? 'selected' : '' ?>><?php echo $this->LANG['error']; ?></option>
-                                        </select>
-                                    </div>
-                                    
-                                    <div class="col-md-2 mb-3">
-                                        <label for="date_from"><?php echo $this->LANG['date_from']; ?>:</label>
-                                        <input type="date" name="date_from" id="date_from" class="form-control" value="<?= $dateFrom ?>">
-                                    </div>
-                                    
-                                    <div class="col-md-2 mb-3">
-                                        <label for="date_to"><?php echo $this->LANG['date_to']; ?>:</label>
-                                        <input type="date" name="date_to" id="date_to" class="form-control" value="<?= $dateTo ?>">
-                                    </div>
-                                    
-                                    <div class="col-md-3 mb-3" style="padding-top: 28px;">
-                                        <div class="d-flex flex-column">
-                                            <button type="submit" class="btn btn-primary mb-2">
-                                                <i class="fas fa-filter mr-1"></i> <?php echo $this->LANG['filter']; ?>
-                                            </button>
-                                            
-                                            <?php if ($eventType || $dateFrom || $dateTo || $status !== ''): ?>
-                                            <a href="addonmodules.php?module=zapcel&action=logs" class="btn btn-outline-secondary btn-sm">
-                                                <i class="fas fa-times mr-1"></i> <?php echo $this->LANG['clear_filters']; ?>
-                                            </a>
-                                            <?php endif; ?>
-                                        </div>
-                                    </div>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tabela de Logs -->
-            <div class="row mt-4">
-                <div class="col-md-12">
-                    <div class="card">
-                        <div class="card-body">
-                            <?php if ($logs->count() > 0): ?>
-                            <div class="table-responsive">
-                                <table class="table table-striped table-hover" id="logsTable">
-                                    <thead>
-                                        <tr>
-                                            <th width="150"><?php echo $this->LANG['date_time']; ?></th>
-                                            <th width="180"><?php echo $this->LANG['event_type']; ?></th>
-                                            <th><?php echo $this->LANG['message']; ?></th>
-                                            <th width="130"><?php echo $this->LANG['client']; ?></th>
-                                            <th width="80"><?php echo $this->LANG['status']; ?></th>
-                                            <th width="100"><?php echo $this->LANG['actions']; ?></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($logs as $log): ?>
-                                        <tr>
-                                            <td>
-                                                <small class="text-muted">
-                                                    <?= date('d/m/Y H:i', strtotime($log->created_at)) ?>
-                                                </small>
-                                            </td>
-                                            <td>
-                                                <span class="badge bg-<?= $this->getLogTypeBadge($log->event_type) ?>">
-                                                    <?= $this->getEventTypeDisplayName($log->event_type) ?>
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <div class="log-message">
-                                                    <?= htmlspecialchars(substr($log->message, 0, 100)) ?>
-                                                    <?php if (strlen($log->message) > 100): ?>
-                                                    ... <a href="#" class="view-full-log" data-logid="<?= $log->id ?>"><?php echo $this->LANG['view_more']; ?></a>
-                                                    <?php endif; ?>
-                                                </div>
-                                                <?php if ($log->response): ?>
-                                                    <?php
-                                                        $responseData = json_decode($log->response, true);
-                                                        // Se tiver api_response dentro, usa ele
-                                                        if (isset($responseData['api_response'])) {
-                                                            $responseData = $responseData['api_response'];
-                                                        }
-                                                        $responseSummary = '';
-                                                        if (is_array($responseData)) {
-                                                            if (isset($responseData['success'])) {
-                                                                $responseSummary .= ' Sucesso: ' . $responseData['success'] ? 'Sucesso' : 'Erro';
-                                                            }
-                                                            if (isset($responseData['message_id'])) {
-                                                                $responseSummary .= ' ID: ' . substr($responseData['message_id'], 0, 8) . '...';
-                                                            }
-                                                            if (isset($responseData['error'])) {
-                                                                $responseSummary .= ' Erro: ' . substr($responseData['error'], 0, 50);
-                                                            }
-                                                        }
-                                                    ?>
-                                                    <?php if ($responseSummary): ?>
-                                                        <small class="text-muted d-block mt-1">
-                                                            <?php echo $this->LANG['response_log']; ?>: <?= htmlspecialchars($responseSummary) ?>
-                                                        </small>
-                                                    <?php endif; ?>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td>
-                                                <?php if ($log->client_id): ?>
-                                                <a href="clientssummary.php?userid=<?= $log->client_id ?>" target="_blank" title="<?= htmlspecialchars($log->firstname . ' ' . $log->lastname) ?>">
-                                                    #<?= $log->client_id ?>
-                                                </a>
-                                                <br>
-                                                <small class="text-muted"><?= htmlspecialchars($log->phone_number) ?></small>
-                                                <?php else: ?>
-                                                    <span class="text-muted">-</span>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td>
-                                                <?php if ((int)$log->success === 1): ?>
-                                                    <span class="badge bg-success"><?php echo $this->LANG['success']; ?></span>
-                                                <?php else: ?>
-                                                    <span class="badge bg-danger"><?php echo $this->LANG['error']; ?></span>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td>
-                                                <div class="btn-group btn-group-sm">
-                                                    <button class="btn btn-outline-primary view-log-details" 
-                                                            data-logid="<?= $log->id ?>" title="<?php echo $this->LANG['view_details']; ?>">
-                                                        <i class="fas fa-eye"></i>
-                                                    </button>
-                                                    <button class="btn btn-outline-danger delete-log" 
-                                                            data-logid="<?= $log->id ?>" title="<?php echo $this->LANG['delete']; ?>">
-                                                        <i class="fas fa-trash"></i>
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-
-                            <!-- Paginação -->
-                            
-                            <?php else: ?>
-                            <div class="text-center py-5">
-                                <i class="fas fa-list-alt fa-4x text-muted mb-3"></i>
-                                <h4 class="text-muted"><?php echo $this->LANG['no_logs_found']; ?></h4>
-                                <p class="text-muted"><?php echo $this->LANG['no_logs_description']; ?></p>
-                                
-                                <?php if ($eventType || $dateFrom || $dateTo || $status !== ''): ?>
-                                <a href="addonmodules.php?module=zapcel&action=logs" class="btn btn-primary">
-                                    <i class="fas fa-times mr-1"></i> <?php echo $this->LANG['clear_filters']; ?>
-                                </a>
-                                <?php endif; ?>
-                            </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Modal Detalhes do Log -->
-        <div class="modal fade" id="logDetailsModal" tabindex="-1" role="dialog">
-            <div class="modal-dialog modal-lg" role="document">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h1 class="modal-title"><?php echo $this->LANG['log_details']; ?></h1>
-                        <button type="button" class="close" data-dismiss="modal">&times;</button>
-                    </div>
-                    <div class="modal-body" id="logDetailsContent">
-                        <!-- Conteúdo carregado via AJAX -->
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-dismiss="modal">&times;</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-        <script>
-            $(document).ready(function() {
-                // Ver detalhes completos do log
-                $('.view-full-log, .view-log-details').click(function(e) {
-                    e.preventDefault();
-                    var logId = $(this).data('logid');
-                    
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: {
-                            subaction: 'get_log_details',
-                            log_id: logId
-                        },
-                        dataType: 'json',
-                        success: function(response) {
-                            if (response.success) {
-                                $('#logDetailsContent').html(response.html);
-                                $('#logDetailsModal').modal('show');
-                            } else {
-                                Swal.fire({
-                                    title: '<?php echo $this->LANG['error']; ?>',
-                                    text: response.error,
-                                    icon: 'error',
-                                    confirmButtonText: 'OK'
-                                });
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-
-                // Excluir log individual
-                $('.delete-log').click(function() {
-                    var logId = $(this).data('logid');
-                    
-                    Swal.fire({
-                        title: '<?php echo $this->LANG['confirm_delete_log']; ?>',
-                        text: '<?php echo $this->LANG['delete_log_warning']; ?>',
-                        icon: 'warning',
-                        showCancelButton: true,
-                        confirmButtonText: '<?php echo $this->LANG['delete']; ?>',
-                        cancelButtonText: '<?php echo $this->LANG['cancel']; ?>',
-                        confirmButtonColor: '#d33',
-                        cancelButtonColor: '#3085d6',
-                        reverseButtons: true
-                    }).then((result) => {
-                        if (result.isConfirmed) {
-                            $.ajax({
-                                url: 'addonmodules.php?module=zapcel&action=ajax',
-                                type: 'POST',
-                                data: {
-                                    subaction: 'delete_log',
-                                    log_id: logId
-                                },
-                                dataType: 'json',
-                                success: function(response) {
-                                    if (response.success) {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['success']; ?>!',
-                                            text: '<?php echo $this->LANG['log_deleted_success']; ?>',
-                                            icon: 'success',
-                                            confirmButtonText: 'OK'
-                                        }).then(() => {
-                                            location.reload();
-                                        });
-                                    } else {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['error']; ?>',
-                                            text: response.error,
-                                            icon: 'error',
-                                            confirmButtonText: 'OK'
-                                        });
-                                    }
-                                },
-                                error: function(xhr, status, error) {
-                                    console.error('Erro AJAX:', xhr.responseText);
-                                    Swal.fire({
-                                        title: '<?php echo $this->LANG['error']; ?>',
-                                        text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                        icon: 'error',
-                                        confirmButtonText: 'OK'
-                                    });
-                                }
-                            });
-                        }
-                    });
-                });
-
-                // Limpar todos os logs
-                $('#clearLogs').click(function() {
-                    Swal.fire({
-                        title: '<?php echo $this->LANG['confirm_clear_logs']; ?>',
-                        text: '<?php echo $this->LANG['clear_logs_warning']; ?>',
-                        icon: 'warning',
-                        showCancelButton: true,
-                        confirmButtonText: '<?php echo $this->LANG['clear_logs']; ?>',
-                        cancelButtonText: '<?php echo $this->LANG['cancel']; ?>',
-                        confirmButtonColor: '#d33',
-                        cancelButtonColor: '#3085d6',
-                        reverseButtons: true
-                    }).then((result) => {
-                        if (result.isConfirmed) {
-                            $.ajax({
-                                url: 'addonmodules.php?module=zapcel&action=ajax',
-                                type: 'POST',
-                                data: {
-                                    subaction: 'clear_logs'
-                                },
-                                dataType: 'json',
-                                success: function(response) {
-                                    if (response.success) {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['logs_cleared']; ?>',
-                                            text: '<?php echo $this->LANG['logs_cleared_success']; ?>!',
-                                            icon: 'success',
-                                            confirmButtonText: 'OK'
-                                        }).then(() => {
-                                            location.reload();
-                                        });
-                                    } else {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['error']; ?>',
-                                            text: response.error,
-                                            icon: 'error',
-                                            confirmButtonText: 'OK'
-                                        });
-                                    }
-                                },
-                                error: function(xhr, status, error) {
-                                    console.error('Erro AJAX:', xhr.responseText);
-                                    Swal.fire({
-                                        title: '<?php echo $this->LANG['error']; ?>',
-                                        text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                        icon: 'error',
-                                        confirmButtonText: 'OK'
-                                    });
-                                }
-                            });
-                        }
-                    });
-                });
-
-                // Atualizar logs
-                $('#refreshLogs').click(function() {
-                    location.reload();
-                });
-            });
-            $(document).ready(function() {
-                $('#logsTable').DataTable({
-                    order: [[5, 'desc']], // Ordena por data (última coluna) decrescente
-                    pageLength: 25,
-                    deferRender: true,  // ← ADICIONA RENDERIZAÇÃO LAZY
-                    language: {
-                        url: '//cdn.datatables.net/plug-ins/1.13.7/i18n/pt-BR.json'
-                    },
-                    columnDefs: [
-                        { orderable: false, targets: [3] } // Desabilita ordenação na coluna "Mensagem"
-                    ]
-                });
-            });
-            </script>
-        <?php
-        return ob_get_clean();
-    }
-
-    /**
-     * Constrói URL de paginação com filtros
-     */
-    private function buildPaginationUrl($page)
-    {
-        $params = [
-            'module' => 'zapcel',
-            'action' => 'logs',
-            'page' => $page
-        ];
-
-        // Adiciona filtros atuais
-        $filters = ['type', 'date_from', 'date_to', 'status'];
-        foreach ($filters as $filter) {
-            if (!empty($_GET[$filter])) {
-                $params[$filter] = $_GET[$filter];
-            }
-        }
-
-        return 'addonmodules.php?' . http_build_query($params);
-    }
-
-    /**
-     * Página de Configurações
-     */
-    private function settingsPage()
-    {
-        $settings = $this->getSettings();
-
-        ob_start();
-        ?>
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fas fa-cog mr-2"></i> 
-                            <?php echo $this->LANG['zapcel_settings']; ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['settings_subtitle']; ?></p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <a href="addonmodules.php?module=zapcel&action=dashboard" class="btn btn-outline-secondary mr-2">
-                            <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back']; ?>
-                        </a>
-                        <button class="btn btn-success" id="saveSettings">
-                            <i class="fas fa-save mr-1"></i> <?php echo $this->LANG['save_settings']; ?>
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <div class="row">
-                <div class="col-md-8">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['main_settings']; ?></h3>
-                        </div>
-                        <div class="card-body">
-                            <form id="settingsForm">
-                                <!-- Status do Módulo -->
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['module_status']; ?></label>
-                                    <select name="status" class="form-control">
-                                        <option value="active" <?= ($settings['status'] ?? '') == 'active' ? 'selected' : '' ?>><?php echo $this->LANG['active']; ?></option>
-                                        <option value="inactive" <?= ($settings['status'] ?? '') == 'inactive' ? 'selected' : '' ?>><?php echo $this->LANG['inactive']; ?></option>
-                                    </select>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['activate_deactivate_module']; ?>
-                                    </small>
-                                </div>
-
-                                <!-- Credenciais API -->
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['instance_id']; ?></label>
-                                    <input type="text" name="zapcel_instance_id" class="form-control" 
-                                           value="<?= $settings['zapcel_instance_id'] ?? '' ?>" 
-                                           placeholder="<?php echo $this->LANG['enter_instance_id']; ?>">
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['instance_id_help']; ?>
-                                    </small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['access_token']; ?></label>
-                                    <input type="text" name="zapcel_access_token" class="form-control" 
-                                           value="<?= $settings['zapcel_access_token'] ?? '' ?>" 
-                                           placeholder="<?php echo $this->LANG['enter_access_token']; ?>">
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['access_token_help']; ?>
-                                    </small>
-                                </div>
-
-                                <!-- Configurações de Envio -->
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['message_delay']; ?></label>
-                                    <input type="number" name="message_delay" class="form-control" 
-                                           value="<?= $settings['message_delay'] ?? 2 ?>" min="1" max="10">
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['message_delay_help']; ?>
-                                    </small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['max_attempts']; ?></label>
-                                    <input type="number" name="max_attempts" class="form-control" 
-                                           value="<?= $settings['max_attempts'] ?? 3 ?>" min="1" max="5">
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['max_attempts_help']; ?>
-                                    </small>
-                                </div>
-
-                                <!-- Validação WhatsApp Obrigatória -->
-                                <div class="form-group">
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" name="zapcel_validation" value="1" 
-                                                <?= ($settings['zapcel_validation'] ?? 0) ? 'checked' : '' ?>>
-                                            <?php echo $this->LANG['enable_validation_system']; ?>
-                                        </label>
-                                    </div>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['enable_validation_system_help']; ?>
-                                    </small>
-                                </div>
-
-                                <!-- Enviar apenas para validados -->
-                                <div class="form-group">
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" name="require_validation" value="1" 
-                                                <?= ($settings['require_validation'] ?? 0) ? 'checked' : '' ?>>
-                                            <?php echo $this->LANG['require_validation']; ?>
-                                        </label>
-                                    </div>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['require_validation_help']; ?>
-                                    </small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['validation_template']; ?></label>
-                                    <select name="validation_template" class="form-control">
-                                        <option value=""><?php echo $this->LANG['select_template']; ?></option>
-                                        <?php
-                                        $templates = Capsule::table('mod_zapcel_templates')
-                                            ->where('trigger_event', 'whatsapp_validation')
-                                            ->get();
-                                        foreach ($templates as $template):
-                                        ?>
-                                        <option value="<?= $template->id ?>" 
-                                                <?= ($settings['validation_template'] ?? '') == $template->id ? 'selected' : '' ?>>
-                                            <?= $template->name ?>
-                                        </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-
-                                <!-- Configurações de Idioma -->
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['module_language']; ?></label>
-                                    <select name="language" class="form-control">
-                                        <option value="portuguese" <?= ($settings['language'] ?? 'portuguese') == 'portuguese' ? 'selected' : '' ?>><?php echo $this->LANG['portuguese_brazil']; ?></option>
-                                        <option value="english" <?= ($settings['language'] ?? '') == 'english' ? 'selected' : '' ?>><?php echo $this->LANG['english']; ?></option>
-                                    </select>
-                                </div>
-
-                                <!-- Configurações de Log -->
-                                <div class="form-group">
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" name="enable_logging" value="1" <?= ($settings['enable_logging'] ?? 1) ? 'checked' : '' ?>>
-                                            <?php echo $this->LANG['enable_logging']; ?>
-                                        </label>
-                                    </div>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['enable_logging_help']; ?>
-                                    </small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['log_retention_days']; ?></label>
-                                    <input type="number" name="log_retention_days" class="form-control" value="<?= $settings['log_retention_days'] ?? 30 ?>" min="1" max="365">
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['log_retention_days_help']; ?>
-                                    </small>
-                                </div>
-
-                                <!-- Botão Flutuante WhatsApp -->
-                                <div class="form-group">
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" name="zapcel_floating_button" value="1" 
-                                                <?= ($settings['zapcel_floating_button'] ?? 0) ? 'checked' : '' ?>>
-                                            <?php echo $this->LANG['enable_floating_button']; ?>
-                                        </label>
-                                    </div>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['enable_floating_button_help']; ?>
-                                    </small>
-                                </div>
-
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['company_phone_number']; ?></label>
-                                    <input type="text" name="zapcel_company_phone_full" class="form-control" 
-                                        value="<?= $settings['zapcel_company_phone_full'] ?? '' ?>" 
-                                        placeholder="Ex: 5511999999999"
-                                        data-phone-number>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['company_phone_number_help']; ?>
-                                    </small>
-                                </div>
-
-                                <div class="form-group">
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" name="zapcel_hide_mobile" value="1" 
-                                                <?= ($settings['zapcel_hide_mobile'] ?? '0') == '1' ? 'checked' : '' ?>>
-                                            <?php echo $this->LANG['hide_mobile_button']; ?>
-                                        </label>
-                                    </div>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['hide_mobile_button_help']; ?>
-                                    </small>
-                                </div>
-
-                            </form>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-md-4">
-                    <!-- Status da Conexão -->
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['connection_status']; ?></h3>
-                        </div>
-                        <div class="card-body text-center">
-                            <?php
-                                $connectionStatus = $this->testAPIConnection();
-                                // Obtém o email do admin logado
-                                $adminEmail = $_SESSION['adminid'] ? Capsule::table('tbladmins')
-                                    ->where('id', $_SESSION['adminid'])
-                                    ->value('email') : 'admin@localhost';
-                            ?>
-                            <div class="connection-status <?= $connectionStatus['success'] ? 'connected' : 'disconnected' ?>">
-                                <i class="fas fa-<?= $connectionStatus['success'] ? 'check-circle' : 'times-circle' ?> fa-3x mb-3"></i>
-                                <h4><?= $connectionStatus['success'] ? $this->LANG['connected'] : $this->LANG['disconnected'] ?></h4>
-                                <p><?= $connectionStatus['message'] ?></p>
-                            </div>
-                            <div class="btn-group" role="group">
-                                <button class="btn btn-info btn-sm" id="testConnection">
-                                    <i class="fas fa-sync mr-1"></i> <?php echo $this->LANG['test_connection']; ?>
-                                </button>
-                                <a href="https://zap.hostcel.com.br/autologin.php?email=<?= urlencode($adminEmail) ?>" 
-                                    class="btn btn-success btn-sm" 
-                                    target="_blank"
-                                    title="Zapcel Panel">
-                                    <i class="fab fa-whatsapp mr-1"></i> Login Zapcel
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Informações da Conta -->
-
-                    <!-- Ações Rápidas -->
-                    <div class="card mt-4">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['quick_actions_settings']; ?></h3>
-                        </div>
-                        <div class="card-body">
-                            <div class="d-grid gap-2">
-                                <button class="btn btn-sm btn-outline-warning" id="clearCache">
-                                    <i class="fas fa-broom"></i> <?php echo $this->LANG['clear_cache']; ?>
-                                </button>
-                                <button class="btn btn-sm btn-outline-info" id="syncTemplates">
-                                    <i class="fas fa-sync"></i> <?php echo $this->LANG['sync_templates']; ?>
-                                </button>
-                                <div class="btn-group btn-group-sm" role="group">
-                                    <button class="btn btn-outline-success" id="exportSettings">
-                                        <i class="fas fa-download"></i> <?php echo $this->LANG['export']; ?>
-                                    </button>
-                                    <button class="btn btn-outline-primary" id="importSettings">
-                                        <i class="fas fa-upload"></i> <?php echo $this->LANG['import']; ?>
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-        <script>
-            $(document).ready(function() {
-                // Salvar configurações
-                $('#saveSettings').click(function() {
-                    var formData = $('#settingsForm').serializeArray();
-                    var dataObj = {};
-                    $.each(formData, function(i, field) {
-                        dataObj[field.name] = field.value;
-                    });
-                    
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: $.extend({subaction: 'save_settings'}, dataObj),
-                        dataType: 'json',
-                        success: function(response) {
-                            if (response.success) {
-                                Swal.fire({
-                                    title: '<?php echo $this->LANG['success']; ?>!',
-                                    text: '<?php echo $this->LANG['settings_saved']; ?>!',
-                                    icon: 'success',
-                                    confirmButtonText: 'OK'
-                                }).then(() => {
-                                    location.reload();
-                                });
-                            } else {
-                                Swal.fire({
-                                    title: '<?php echo $this->LANG['error']; ?>',
-                                    text: response.error,
-                                    icon: 'error',
-                                    confirmButtonText: 'OK'
-                                }).then(() => {
-                                    location.reload();
-                                });
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-
-                // Testar conexão
-                $('#testConnection').click(function() {
-
-                    Swal.fire({
-                        title: 'Testando conexão...',
-                        text: 'Aguarde...',
-                        allowOutsideClick: false,
-                        allowEscapeKey: false,
-                        didOpen: () => Swal.showLoading()
-                    });
-
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: { subaction: 'test_connection' },
-                        dataType: 'json',
-                        success: function(response) {
-
-                            Swal.fire({
-                                title: response.success 
-                                    ? '<?php echo $this->LANG['success']; ?>!' 
-                                    : '<?php echo $this->LANG['warning']; ?>',
-                                
-                                text: response.success 
-                                    ? (response.message ?? 'Conexão bem-sucedida.') 
-                                    : (response.error ?? 'Falha ao testar a conexão.'),
-
-                                icon: response.success ? 'success' : 'warning',
-                                confirmButtonText: 'OK'
-                            }).then(() => location.reload());
-                        },
-
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-
-                // Ações rápidas - Limpar Cache
-                $('#clearCache').click(function() {
-                    Swal.fire({
-                        title: '<?php echo $this->LANG['confirm_clear_cache']; ?>?',
-                        text: '<?php echo $this->LANG['clear_cache_warning']; ?>',
-                        icon: 'warning',
-                        showCancelButton: true,
-                        confirmButtonText: '<?php echo $this->LANG['clear_cache_templates']; ?>',
-                        cancelButtonText: '<?php echo $this->LANG['cancel']; ?>',
-                        confirmButtonColor: '#d33',
-                        cancelButtonColor: '#3085d6',
-                        reverseButtons: true
-                    }).then((result) => {
-                        if (result.isConfirmed) {
-                            $.ajax({
-                                url: 'addonmodules.php?module=zapcel&action=ajax',
-                                type: 'POST',
-                                data: {
-                                    subaction: 'clear_templates_cache'
-                                },
-                                dataType: 'json',
-                                success: function(response) {
-                                    Swal.fire({
-                                        title: response.success ? '<?php echo $this->LANG['success']; ?>!' : '<?php echo $this->LANG['warning']; ?>',
-                                        text: response.message,
-                                        icon: response.success ? 'success' : 'warning',
-                                        confirmButtonText: 'OK'
-                                    });
-                                },
-                                error: function(xhr, status, error) {
-                                    console.error('Erro AJAX:', xhr.responseText);
-                                    Swal.fire({
-                                        title: '<?php echo $this->LANG['error']; ?>',
-                                        text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                        icon: 'error',
-                                        confirmButtonText: 'OK'
-                                    });
-                                }
-                            });
-                        }
-                    });
-                });
-
-                // Sincronizar Templates
-                $('#syncTemplates').click(function() {
-                    $.ajax({
-                        url: 'addonmodules.php?module=zapcel&action=ajax',
-                        type: 'POST',
-                        data: {
-                            subaction: 'sync_templates'
-                        },
-                        dataType: 'json',
-                        success: function(response) {
-                            Swal.fire({
-                                title: response.success ? '<?php echo $this->LANG['success']; ?>!' : '<?php echo $this->LANG['warning']; ?>',
-                                text: response.message,
-                                icon: response.success ? 'success' : 'warning',
-                                confirmButtonText: 'OK'
-                            });
-                        },
-                        error: function(xhr, status, error) {
-                            console.error('Erro AJAX:', xhr.responseText);
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    });
-                });
-
-                // Exportar Configurações
-                $('#exportSettings').click(function() {
-                    Swal.fire({
-                        title: '<?php echo $this->LANG['export_settings']; ?>?',
-                        text: '<?php echo $this->LANG['export_settings_warning']; ?>',
-                        icon: 'info',
-                        showCancelButton: true,
-                        confirmButtonText: '<?php echo $this->LANG['export']; ?>',
-                        cancelButtonText: '<?php echo $this->LANG['cancel']; ?>',
-                        reverseButtons: true
-                    }).then((result) => {
-                        if (result.isConfirmed) {
-                            $.ajax({
-                                url: 'addonmodules.php?module=zapcel&action=ajax',
-                                type: 'POST',
-                                data: { 
-                                    subaction: 'export_settings' 
-                                },
-                                dataType: 'json',
-                                success: function(response) {
-                                    console.log('Resposta export:', response);
-                                    
-                                    if (response.success && response.data) {
-                                        const dataStr = JSON.stringify(response.data, null, 2);
-                                        const blob = new Blob([dataStr], {type: 'application/json;charset=utf-8'});
-                                        const url = URL.createObjectURL(blob);
-                                        const a = document.createElement('a');
-                                        a.href = url;
-                                        a.download = response.filename || 'zapcel_backup.json';
-                                        document.body.appendChild(a);
-                                        a.click();
-                                        document.body.removeChild(a);
-                                        URL.revokeObjectURL(url);
-                                        
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['success']; ?>!',
-                                            text: '<?php echo $this->LANG['export_success']; ?>',
-                                            icon: 'success',
-                                            confirmButtonText: 'OK'
-                                        });
-                                    } else {
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['error']; ?>',
-                                            text: response.error || zapcel_trans('export_settings_error'),
-                                            icon: 'error',
-                                            confirmButtonText: 'OK'
-                                        });
-                                    }
-                                },
-                                error: function(xhr, status, error) {
-                                    console.error('Erro AJAX:', xhr.responseText);
-                                    Swal.fire({
-                                        title: '<?php echo $this->LANG['error']; ?>',
-                                        text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                        icon: 'error',
-                                        confirmButtonText: 'OK'
-                                    });
-                                }
-                            });
-                        }
-                    });
-                });
-
-                // Botão Importar Configurações
-                $('#importSettings').click(function() {
-                    // Cria input file dinamicamente
-                    const fileInput = document.createElement('input');
-                    fileInput.type = 'file';
-                    fileInput.accept = '.json';
-                    fileInput.style.display = 'none';
-                    
-                    fileInput.onchange = function(e) {
-                        const file = e.target.files[0];
-                        if (!file) return;
-                        
-                        // Verifica se é arquivo JSON
-                        if (!file.name.endsWith('.json')) {
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: '<?php echo $this->LANG['invalid_file_format']; ?>',
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                            return;
-                        }
-                        
-                        Swal.fire({
-                            title: '<?php echo $this->LANG['import_settings']; ?>?',
-                            text: '<?php echo $this->LANG['import_settings_warning']; ?>',
-                            icon: 'warning',
-                            showCancelButton: true,
-                            confirmButtonText: '<?php echo $this->LANG['import']; ?>',
-                            cancelButtonText: '<?php echo $this->LANG['cancel']; ?>',
-                            reverseButtons: true
-                        }).then((result) => {
-                            if (result.isConfirmed) {
-                                const formData = new FormData();
-                                formData.append('import_file', file);
-                                formData.append('subaction', 'import_settings');
-                                
-                                $.ajax({
-                                    url: 'addonmodules.php?module=zapcel&action=ajax',
-                                    type: 'POST',
-                                    data: formData,
-                                    processData: false,
-                                    contentType: false,
-                                    dataType: 'json',
-                                    success: function(response) {
-                                        if (response.success) {
-                                            Swal.fire({
-                                                title: '<?php echo $this->LANG['success']; ?>!',
-                                                text: response.message,
-                                                icon: 'success',
-                                                confirmButtonText: 'OK'
-                                            }).then(() => {
-                                                location.reload();
-                                            });
-                                        } else {
-                                            Swal.fire({
-                                                title: '<?php echo $this->LANG['error']; ?>',
-                                                text: response.error,
-                                                icon: 'error',
-                                                confirmButtonText: 'OK'
-                                            });
-                                        }
-                                    },
-                                    error: function(xhr, status, error) {
-                                        console.error('Erro AJAX:', xhr.responseText);
-                                        Swal.fire({
-                                            title: '<?php echo $this->LANG['error']; ?>',
-                                            text: '<?php echo $this->LANG['connection_error']; ?>: ' + error,
-                                            icon: 'error',
-                                            confirmButtonText: 'OK'
-                                        });
-                                    }
-                                });
-                            }
-                        });
-                    };
-                    
-                    document.body.appendChild(fileInput);
-                    fileInput.click();
-                    document.body.removeChild(fileInput);
-                });
-            });
-        </script>
-
-        <style>
-        .connection-status.connected {
-            color: #28a745;
-        }
-        .connection-status.disconnected {
-            color: #dc3545;
-        }
-        .account-info p {
-            margin-bottom: 5px;
-            font-size: 14px;
-        }
-        </style>
-        <?php
-        return ob_get_clean();
-    }
-
-    /**
-     * Página de Teste de Mensagem
-     */
-    private function testMessagePage()
-    {
-        $clients = Capsule::table('tblclients')
-            ->select('id', 'firstname', 'lastname', 'phonenumber')
-            ->orderBy('firstname', 'asc')
-            ->get();
-
-        ob_start();
-        ?>
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fas fa-paper-plane mr-2"></i> 
-                            <?php echo $this->LANG['test_whatsapp_message']; ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['test_message_subtitle']; ?></p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <a href="addonmodules.php?module=zapcel&action=dashboard" class="btn btn-outline-secondary">
-                            <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back']; ?>
-                        </a>
-                    </div>
-                </div>
-            </div>
-
-            <div class="row">
-                <div class="col-md-8">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['configure_test_message']; ?></h3>
-                        </div>
-                        <div class="card-body">
-                            <form id="testMessageForm">
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['destination_client']; ?></label>
-                                    <select name="client_id" class="form-control" required>
-                                        <option value=""><?php echo $this->LANG['select_client']; ?></option>
-                                        <?php foreach ($clients as $client): ?>
-                                        <option value="<?= $client->id ?>">
-                                            <?= htmlspecialchars($client->firstname) ?> <?= htmlspecialchars($client->lastname) ?> 
-                                            (<?= htmlspecialchars($client->phonenumber) ?>)
-                                        </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-
-                                <div class="form-group">
-                                    <label class="font-weight-bold"><?php echo $this->LANG['test_message']; ?></label>
-                                    <textarea name="custom_message" class="form-control" rows="8" placeholder="<?php echo $this->LANG['enter_test_message']; ?>" id="customMessage" required></textarea>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['available_variables_test']; ?>
-                                    </small>
-                                </div>
-
-                                <div class="form-group">
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" name="simulate_only" value="1" checked>
-                                            <?php echo $this->LANG['simulate_only']; ?>
-                                        </label>
-                                    </div>
-                                    <small class="form-text text-muted">
-                                        <?php echo $this->LANG['simulate_only_help']; ?>
-                                    </small>
-                                </div>
-
-                                <button type="submit" class="btn btn-primary btn-lg">
-                                    <i class="fas fa-paper-plane mr-1"></i> <?php echo $this->LANG['send_test_message']; ?>
-                                </button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-md-4">
-                    <!-- Preview da Mensagem -->
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['message_preview']; ?></h3>
-                        </div>
-                        <div class="card-body">
-                            <div id="messagePreview" class="message-preview">
-                                <p class="text-muted text-center">
-                                    <?php echo $this->LANG['select_template_or_type']; ?>
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Variáveis Disponíveis -->
-                    <div class="card mt-4">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['available_variables_list']; ?></h3>
-                        </div>
-                        <div class="card-body">
-                            <div class="variables-list">
-                                <p class="text-muted mb-3"><?php echo $this->LANG['use_variables_below']; ?></p>
-                                <ul class="list-unstyled">
-                                    <li class="mb-2">
-                                        <code>{cliente}</code><br>
-                                        <small class="text-muted"><?php echo $this->LANG['client_full_name']; ?></small>
-                                    </li>
-                                    <li class="mb-2">
-                                        <code>{provedor}</code><br>
-                                        <small class="text-muted"><?php echo $this->LANG['company_name']; ?></small>
-                                    </li>
-                                </ul>
-                                <div class="alert alert-info mt-3">
-                                    <small><i class="fas fa-info-circle"></i> <strong><?php echo $this->LANG['tip']; ?>:</strong> <?php echo $this->LANG['test_variables_tip']; ?></small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Resultado do Teste -->
-            <div class="row mt-4" id="testResult" style="display: none;">
-                <div class="col-md-12">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title"><?php echo $this->LANG['test_result']; ?></h3>
-                        </div>
-                        <div class="card-body" id="testResultContent">
-                            <!-- Conteúdo carregado via AJAX -->
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <script>
-        $(document).ready(function() {
-            // Atualizar preview quando mensagem for alterada
-            $('#customMessage').on('input', function() {
-                updateMessagePreview($(this).val());
-            });
-
-            // Enviar mensagem de teste
-            $('#testMessageForm').submit(function(e) {
-                e.preventDefault();
-                var formData = $(this).serializeArray();
-                var dataObj = {};
-                $.each(formData, function(i, field) {
-                    dataObj[field.name] = field.value;
-                });
-                
-                $.ajax({
-                    url: 'addonmodules.php?module=zapcel&action=ajax',
-                    type: 'POST',
-                    data: $.extend({subaction: 'send_test_message'}, dataObj),
-                    dataType: 'json',
-                    success: function(response) {
-                        if (response.success) {
-                            $('#testResultContent').html(response.html);
-                            $('#testResult').show();
-                            $('html, body').animate({
-                                scrollTop: $('#testResult').offset().top
-                            }, 500);
-                        } else {
-                            Swal.fire({
-                                title: '<?php echo $this->LANG['error']; ?>',
-                                text: response.error || '<?php echo $this->LANG['unknown_error']; ?>',
-                                icon: 'error',
-                                confirmButtonText: 'OK'
-                            });
-                        }
-                    },
-                    error: function(xhr, status, error) {
-                        console.error('Erro AJAX:', xhr.responseText);
-                        Swal.fire({
-                            title: '<?php echo $this->LANG['error']; ?>',
-                            text: '<?php echo $this->LANG['error_sending_test_message']; ?>: ' + error,
-                            icon: 'error',
-                            confirmButtonText: 'OK'
-                        });
-                    }
-                });
-            });
-
-            function updateMessagePreview(content) {
-                if (!content.trim()) {
-                    $('#messagePreview').html('<p class="text-muted text-center"><?php echo $this->LANG['enter_message_to_preview']; ?></p>');
-                    return;
-                }
-
-                // Simular processamento básico da mensagem
-                var preview = content.replace(/\n/g, '<br>');
-
-                $('#messagePreview').html('<div class="whatsapp-message">' + preview + '</div>');
-            }
-        });
-        </script>
-
-        <style>
-        .message-preview {
-            min-height: 200px;
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 15px;
-            background: #f8f9fa;
-        }
-        .whatsapp-message {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            line-height: 1.5;
-        }
-        .variables-list h6 {
-            margin-top: 15px;
-            margin-bottom: 5px;
-            font-weight: bold;
-            color: #495057;
-        }
-        .variables-list code {
-            background: #e9ecef;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 12px;
-        }
-        </style>
-        <?php
-        return ob_get_clean();
-    }
-
-    /**
-     * Página de Auto Login - VERSÃO CORRIGIDA
-     * Copiar esta função inteira para modules/addons/zapcel/admin/index.php
-     */
-    private function autologinPage()
-    {
-        require_once __DIR__ . '/../api/AutoLogin.php';
-        
-        $autoLogin = new \WHMCS\Module\Addon\Zapcel\Api\AutoLogin();
-        $stats = $autoLogin->getStatistics();
-        
-        // Busca tokens
-        $tokens = Capsule::table('mod_zapcel_autologin as a')
-            ->join('tblclients as c', 'a.client_id', '=', 'c.id')
-            ->select(
-                'a.*',
-                'c.firstname',
-                'c.lastname',
-                'c.email'
-            )
-            ->orderBy('a.created_at', 'desc')
-            ->limit(100)
-            ->get();
-        
-        $today = date('Y-m-d');
-
-        $todayActive = Capsule::table('mod_zapcel_autologin')
-            ->whereDate('created_at', $today)
-            ->where('status', 'active')
-            ->count();
-
-        $todayExpired = Capsule::table('mod_zapcel_autologin')
-            ->whereDate('expires_at', $today)
-            ->count();
-
-        $todayClicks = (int) (Capsule::table('mod_zapcel_autologin_access')
-            ->whereDate('last_access', $today)
-            ->sum('access_count') ?? 0);
-
-        $todayTotal = Capsule::table('mod_zapcel_autologin')
-            ->whereDate('created_at', $today)
-            ->count();
-
-        ob_start();
-        ?>
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fas fa-key mr-2"></i> 
-                            <?php echo $this->LANG['autologin_title'] ?? 'Auto Login'; ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['autologin_subtitle'] ?? 'Gerencie tokens de acesso direto para faturas e tickets'; ?></p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <a href="addonmodules.php?module=zapcel&action=dashboard" class="btn btn-outline-secondary">
-                            <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back'] ?? 'Voltar'; ?>
-                        </a>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Cards de Estatísticas -->
-            <div class="row">
-                <!-- Tokens Ativos -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-success">
-                            <i class="fas fa-check-circle"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['active_tokens'] ?? 'Tokens Ativos'; ?></span>
-                            <span class="info-box-number"><?= number_format($stats['active']) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-success" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayActive) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['active_tokens_desc'] ?? 'Tokens válidos e utilizáveis.' ?></small>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Tokens Expirados -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-warning">
-                            <i class="fas fa-clock"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['expired_tokens'] ?? 'Tokens Expirados'; ?></span>
-                            <span class="info-box-number"><?= number_format($stats['expired']) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-warning" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayExpired) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['expired_tokens_desc'] ?? 'Tokens que perderam validade.' ?></small>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Total de Cliques -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-info">
-                            <i class="fas fa-mouse-pointer"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['total_clicks'] ?? 'Total de Cliques'; ?></span>
-                            <span class="info-box-number"><?= number_format($stats['total_accesses']) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-info" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayClicks) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['total_clicks_desc'] ?? 'Acessos gerados pelos tokens.' ?></small>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Total de Tokens -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-primary">
-                            <i class="fas fa-link"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['total_tokens'] ?? 'Total de Tokens'; ?></span>
-                            <span class="info-box-number"><?= number_format($stats['total']) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-primary" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayTotal) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['total_tokens_desc'] ?? 'Quantidade total gerada.' ?></small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tabela de Tokens -->
-            <div class="row">
-                <div class="col-md-12">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title mb-0"><?php echo $this->LANG['tokens_history'] ?? 'Histórico de Tokens'; ?></h3>
-                        </div>
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-striped table-hover" id="autologinTable">
-                                    <thead>
-                                        <tr>
-                                            <th><?php echo $this->LANG['client'] ?? 'Cliente'; ?></th>
-                                            <th><?php echo $this->LANG['type'] ?? 'Tipo'; ?></th>
-                                            <th><?php echo $this->LANG['target'] ?? 'Alvo'; ?></th>
-                                            <th><?php echo $this->LANG['token'] ?? 'Token'; ?></th>
-                                            <th><?php echo $this->LANG['created_at'] ?? 'Criado em'; ?></th>
-                                            <th><?php echo $this->LANG['expires_at'] ?? 'Expira em'; ?></th>
-                                            <th><?php echo $this->LANG['clicks'] ?? 'Cliques'; ?></th>
-                                            <th><?php echo $this->LANG['last_access'] ?? 'Último Acesso'; ?></th>
-                                            <th><?php echo $this->LANG['ip_address'] ?? 'IP'; ?></th>
-                                            <th><?php echo $this->LANG['status'] ?? 'Status'; ?></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($tokens as $token): ?>
-                                        <?php
-                                            // Determina status baseado apenas na expiração
-                                            if (strtotime($token->expires_at) < time()) {
-                                                $status = 'expired';
-                                                $statusLabel = $this->LANG['expired'] ?? 'Expirado';
-                                                $statusClass = 'secondary';
-                                            } else {
-                                                $status = 'active';
-                                                $statusLabel = $this->LANG['active'] ?? 'Ativo';
-                                                $statusClass = 'success';
-                                            }
-                                            
-                                            // Tipo formatado
-                                            $typeLabel = $token->target_type === 'invoice' 
-                                                ? ($this->LANG['invoice'] ?? 'Fatura')
-                                                : ($this->LANG['ticket'] ?? 'Ticket');
-                                        ?>
-                                        <tr>
-                                            <td>
-                                                <strong><a style="text-decoration: none;" href="clientssummary.php?userid=<?= $token->client_id ?>" target="_blank" title="<?= htmlspecialchars($token->firstname . ' ' . $token->lastname) ?>"><?= htmlspecialchars($token->firstname) ?> <?= htmlspecialchars($token->lastname) ?></strong><br>
-                                                <small class="text-muted"><?= htmlspecialchars($token->email) ?></small>
-                                            </td>
-                                            <td>
-                                                <span class="badge bg-<?= $token->target_type === 'invoice' ? 'info' : 'warning' ?>">
-                                                    <i class="fas fa-<?= $token->target_type === 'invoice' ? 'file-invoice' : 'ticket-alt' ?>"></i>
-                                                    <?= $typeLabel ?>
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <strong>#<?= $token->target_id ?></strong>
-                                            </td>
-                                            <td>
-                                                <code class="token-display" title="<?= htmlspecialchars($token->token) ?>">
-                                                    <?= substr($token->token, 0, 12) ?>...
-                                                </code>
-                                                <button class="btn btn-xs btn-link copy-token" data-token="<?= htmlspecialchars($token->token) ?>" title="Copiar token completo">
-                                                    <i class="fas fa-copy"></i>
-                                                </button>
-                                            </td>
-                                            <td>
-                                                <small><?= date('d/m/Y H:i', strtotime($token->created_at)) ?></small>
-                                            </td>
-                                            <td>
-                                                <small class="<?= $status === 'expired' ? 'text-danger' : '' ?>">
-                                                    <?= date('d/m/Y H:i', strtotime($token->expires_at)) ?>
-                                                </small>
-                                            </td>
-                                            <td class="text-center">
-                                                <span class="badge bg-<?= $token->access_count > 0 ? 'success' : 'secondary' ?>">
-                                                    <?= number_format($token->access_count) ?>
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <?php if ($token->last_access_at): ?>
-                                                    <small class="text-success">
-                                                        <?= date('d/m/Y H:i', strtotime($token->last_access_at)) ?>
-                                                    </small>
-                                                <?php else: ?>
-                                                    <span class="text-muted">-</span>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td>
-                                                <?php if ($token->last_ip): ?>
-                                                    <small><code><?= htmlspecialchars($token->last_ip) ?></code></small>
-                                                <?php else: ?>
-                                                    <span class="text-muted">-</span>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td>
-                                                <span class="badge bg-<?= $statusClass ?>">
-                                                    <?= $statusLabel ?>
-                                                </span>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <script>
-        $(document).ready(function() {
-            // DataTable
-            $('#autologinTable').DataTable({
-                order: [[4, 'desc']],
-                pageLength: 25,
-                language: {
-                    url: '//cdn.datatables.net/plug-ins/1.13.7/i18n/pt-BR.json'
-                }
-            });
-
-            // Copiar token
-            $('.copy-token').on('click', function() {
-                var token = $(this).data('token');
-                var tempInput = $('<input>');
-                $('body').append(tempInput);
-                tempInput.val(token).select();
-                document.execCommand('copy');
-                tempInput.remove();
-                
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Token copiado!',
-                    text: zapcel_trans('token_copied_to_clipboard'),
-                    timer: 2000,
-                    showConfirmButton: false
-                });
-            });
-        });
-        </script>
-        <?php
-        return ob_get_clean();
-    }
-    
-    /**
-     * FUNÇÃO campaignsPage() CORRETA
-     * 
-     * SEGUINDO FIELMENTE O PADRÃO DO AUTOLOGIN:
-     * - Header-container igual
-     * - Info-boxes com estatísticas
-     * - Tabela com nome + quantidade abaixo
-     * - Gráfico simples (Chart.js inline)
-     * - Botões de ação
-     */
-    
-    private function campaignsPage()
-    {
-        // Busca estatísticas gerais
-        $stats = [
-            'total' => Capsule::table('mod_zapcel_campaigns')->count(),
-            'active' => Capsule::table('mod_zapcel_campaigns')->where('status', 'active')->count(),
-            'paused' => Capsule::table('mod_zapcel_campaigns')->where('status', 'paused')->count(),
-            'finished' => Capsule::table('mod_zapcel_campaigns')->where('status', 'finished')->count(),
-        ];
-        
-        // Busca campanhas
-        $campaigns = Capsule::table('mod_zapcel_campaigns')
-            ->orderBy('id', 'desc')
-            ->get();
-        
-        $today = date('Y-m-d');
-        
-        $todayActive = Capsule::table('mod_zapcel_campaigns')
-            ->whereDate('created_at', $today)
-            ->where('status', 'active')
-            ->count();
-        
-        $todaySent = Capsule::table('mod_zapcel_campaign_queue')
-            ->whereDate('sent_at', $today)
-            ->where('status', 'sent')
-            ->count();
-        
-        $todayTotal = Capsule::table('mod_zapcel_campaigns')
-            ->whereDate('created_at', $today)
-            ->count();
-        
-        ob_start();
-        ?>
-        <div class="zapcel-admin-container">
-            <div class="header-container">
-                <div class="row align-items-center">
-                    <div class="col-md-8">
-                        <h2>
-                            <i class="fas fa-bullhorn mr-2"></i> 
-                            <?php echo $this->LANG['campaigns_title'] ?? 'Campanhas de Marketing'; ?>
-                        </h2>
-                        <p class="text-muted"><?php echo $this->LANG['campaigns_subtitle'] ?? 'Gerencie campanhas de WhatsApp para clientes do WHMCS'; ?></p>
-                    </div>
-                    <div class="col-md-4 text-right">
-                        <a href="addonmodules.php?module=zapcel&action=dashboard" class="btn btn-outline-secondary mr-2">
-                            <i class="fas fa-arrow-left mr-1"></i> <?php echo $this->LANG['back'] ?? 'Voltar'; ?>
-                        </a>
-                        <button class="btn btn-success" onclick="openCampaignForm(0)">
-                            <i class="fas fa-plus mr-1"></i> <?php echo $this->LANG['new_campaign'] ?? 'Nova Campanha'; ?>
-                        </button>
-                    </div>
-                </div>
-            </div>
-    
-            <!-- Cards de Estatísticas (IGUAL AO AUTOLOGIN) -->
-            <div class="row">
-                <!-- Campanhas Ativas -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-success">
-                            <i class="fas fa-play-circle"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['active_campaigns'] ?? 'Campanhas Ativas'; ?></span>
-                            <span class="info-box-number"><?= number_format($stats['active']) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-success" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayActive) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['active_campaigns_desc'] ?? 'Campanhas em execução.' ?></small>
-                        </div>
-                    </div>
-                </div>
-    
-                <!-- Campanhas Pausadas -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-warning">
-                            <i class="fas fa-pause-circle"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['paused_campaigns'] ?? 'Campanhas Pausadas'; ?></span>
-                            <span class="info-box-number"><?= number_format($stats['paused']) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-warning" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted"><?= $this->LANG['paused_campaigns_desc'] ?? 'Campanhas temporariamente pausadas.' ?></small>
-                        </div>
-                    </div>
-                </div>
-    
-                <!-- Mensagens Enviadas Hoje -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-info">
-                            <i class="fas fa-paper-plane"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['sent_today'] ?? 'Enviadas Hoje'; ?></span>
-                            <span class="info-box-number"><?= number_format($todaySent) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-info" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted"><?= $this->LANG['sent_today_desc'] ?? 'Mensagens enviadas hoje.' ?></small>
-                        </div>
-                    </div>
-                </div>
-    
-                <!-- Total de Campanhas -->
-                <div class="col-md-3">
-                    <div class="info-box">
-                        <span class="info-box-icon bg-primary">
-                            <i class="fas fa-list"></i>
-                        </span>
-                        <div class="info-box-content">
-                            <span class="info-box-text"><?php echo $this->LANG['total_campaigns'] ?? 'Total de Campanhas'; ?></span>
-                            <span class="info-box-number"><?= number_format($stats['total']) ?></span>
-                            <div class="progress mt-2" style="height: 4px; margin-bottom: 8px;">
-                                <div class="progress-bar bg-primary" style="width: 100%"></div>
-                            </div>
-                            <small class="text-muted mt-1 d-block">
-                                <?= $this->LANG['today'] ?? 'Hoje' ?>: <?= number_format($todayTotal) ?>
-                            </small>
-                            <small class="text-muted"><?= $this->LANG['total_campaigns_desc'] ?? 'Todas as campanhas criadas.' ?></small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <style>
-                /* ===== ZAPCEL – CAMPANHAS ===== */
-                .zapcel-campaigns .badge-status-draft {
-                    background-color: #6c757d;
-                }
-                
-                .zapcel-campaigns .badge-status-active {
-                    background-color: #28a745;
-                }
-                
-                .zapcel-campaigns .badge-status-paused {
-                    background-color: #ffc107;
-                    color: #000;
-                }
-                
-                .zapcel-campaigns .badge-status-finished {
-                    background-color: #17a2b8;
-                }
-                
-                .zapcel-campaigns .badge-status-scheduled {
-                    background-color: #007bff;
-                }
-                
-                /* contadores */
-                .zapcel-campaigns .badge-sent {
-                    background-color: #28a745;
-                }
-                
-                .zapcel-campaigns .badge-pending {
-                    background-color: #ffc107;
-                    color: #000;
-                }
-                
-                .zapcel-campaigns .badge-failed {
-                    background-color: #dc3545;
-                }
-                .zapcel-campaigns .zapcel-progress{
-                  width: 150px;
-                  height: 12px;
-                  background: #e9ecef;
-                  border-radius: 999px;
-                  overflow: hidden;
-                  display: flex;
-                  box-shadow: inset 0 0 0 1px rgba(0,0,0,.06);
-                }
-                
-                .zapcel-campaigns .zapcel-progress-sent{
-                  height: 100%;
-                  background: #28a745;
-                }
-                
-                .zapcel-campaigns .zapcel-progress-failed{
-                  height: 100%;
-                  background: #dc3545;
-                }
-                
-                .zapcel-campaigns .zapcel-progress-label{
-                  font-size: 11px;
-                  color: #6c757d;
-                  margin-top: 4px;
-                }
-                
-                /* ===== STATUS DAS CAMPANHAS (ISOLADO ZAPCEL) ===== */
-                .badge-status-secondary {
-                    background-color: #6c757d;
-                    color: #fff;
-                }
-                
-                .badge-status-success {
-                    background-color: #28a745;
-                    color: #fff;
-                }
-                
-                .badge-status-warning {
-                    background-color: #ffc107;
-                    color: #212529;
-                }
-                
-                .badge-status-info {
-                    background-color: #17a2b8;
-                    color: #fff;
-                }
-                
-                .badge-status-primary {
-                    background-color: #007bff;
-                    color: #fff;
-                }
-                
-                /* opcional: ajuste visual */
-                .badge-status-secondary,
-                .badge-status-success,
-                .badge-status-warning,
-                .badge-status-info,
-                .badge-status-primary {
-                    font-size: 12px;
-                    padding: 5px 9px;
-                    border-radius: 6px;
-                    font-weight: 600;
-                }
-            </style>
-            <!-- Tabela de Campanhas (IGUAL AO AUTOLOGIN) -->
-            <div class="card zapcel-campaigns">
-                <div class="card-header">
-                    <h3 class="card-title">
-                        <i class="fas fa-list mr-2"></i> <?php echo $this->LANG['campaigns_list'] ?? 'Lista de Campanhas'; ?>
-                    </h3>
-                </div>
-                <div class="card-body table-responsive p-0">
-                    <?php if ($campaigns->isEmpty()): ?>
-                        <div class="alert alert-info text-center m-3">
-                            <i class="fas fa-info-circle mr-2"></i>
-                            <?php echo $this->LANG['no_campaigns_found'] ?? 'Nenhuma campanha encontrada.'; ?>
-                            <button class="btn btn-sm btn-info ml-3" onclick="openCampaignForm(0)">
-                                <i class="fas fa-plus mr-1"></i> <?php echo $this->LANG['create_first_campaign'] ?? 'Criar primeira campanha'; ?>
-                            </button>
-                        </div>
-                    <?php else: ?>
-                        <table class="table table-hover">
-                            <thead>
-                                <tr>
-                                    <th><?php echo $this->LANG['campaign_name'] ?? 'Nome da Campanha'; ?></th>
-                                    <th class="text-center"><?php echo $this->LANG['status'] ?? 'Status'; ?></th>
-                                    <th class="text-center"><?php echo $this->LANG['proxima_acao'] ?? 'Próxima Ação'; ?></th>
-                                    <th class="text-center"><?php echo $this->LANG['sent'] ?? 'Enviadas'; ?></th>
-                                    <th class="text-center"><?php echo $this->LANG['pending'] ?? 'Pendentes'; ?></th>
-                                    <th class="text-center"><?php echo $this->LANG['failed'] ?? 'Fracassadas'; ?></th>
-                                    <th class="text-center"><?php echo $this->LANG['progress'] ?? 'Progresso'; ?></th>
-                                    <th class="text-center"><?php echo $this->LANG['actions'] ?? 'Ações'; ?></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($campaigns as $campaign): 
-                                    $successRate = $campaign->total_contacts > 0 
-                                        ? round(($campaign->sent_count / $campaign->total_contacts) * 100, 1) 
-                                        : 0;
-                                    
-                                    $statusColors = [
-                                        'draft' => 'secondary',
-                                        'active' => 'success',
-                                        'paused' => 'warning',
-                                        'finished' => 'info',
-                                        'scheduled' => 'primary'
-                                    ];
-                                    $statusColor = $statusColors[$campaign->status] ?? 'secondary';
-                                    $nowTs = time();
-                                    $scheduleTs = !empty($campaign->schedule_start) ? strtotime($campaign->schedule_start) : 0;
-                                    $isFuture = ($scheduleTs && $scheduleTs > $nowTs);
-                                    
-                                    $isFinished = ($campaign->status === 'finished');
-                                    
-                                    // Botão principal (toggle)
-                                    $toggleIcon  = 'fa-play';
-                                    $toggleClass = 'btn-success';
-                                    $toggleTitle = $this->LANG['start'] ?? 'Iniciar';
-                                    
-                                    if ($campaign->status === 'active') {
-                                        $toggleIcon  = 'fa-pause';
-                                        $toggleClass = 'btn-warning';
-                                        $toggleTitle = $this->LANG['pause'] ?? 'Pausar';
-                                    } elseif ($campaign->status === 'paused') {
-                                        $toggleIcon  = $isFuture ? 'fa-clock' : 'fa-play';
-                                        $toggleClass = $isFuture ? 'btn-primary' : 'btn-success';
-                                        $toggleTitle = $isFuture ? ($this->LANG['schedule'] ?? 'Agendar') : ($this->LANG['resume'] ?? 'Retomar');
-                                    } elseif ($campaign->status === 'scheduled') {
-                                        $toggleIcon  = 'fa-ban';
-                                        $toggleClass = 'btn-secondary';
-                                        $toggleTitle = $this->LANG['cancel_schedule'] ?? 'Cancelar agendamento';
-                                    } else { // draft (ou qualquer outro)
-                                        $toggleIcon  = $isFuture ? 'fa-clock' : 'fa-play';
-                                        $toggleClass = $isFuture ? 'btn-primary' : 'btn-success';
-                                        $toggleTitle = $isFuture ? ($this->LANG['schedule'] ?? 'Agendar') : ($this->LANG['start'] ?? 'Iniciar');
-                                    }
-                                ?>
-                                <tr>
-                                    <td>
-                                        <strong><?= htmlspecialchars($campaign->name) ?></strong>
-                                        <small class="text-muted ml-2 align-middle">
-                                            <i class="fas fa-users mr-1"></i>
-                                            <?= number_format($campaign->total_contacts) ?> <?php echo $this->LANG['contacts'] ?? 'contatos'; ?>
-                                        </small>
-                                    </td>
-
-                                    <td class="text-center">
-                                        <span class="badge badge-status-<?= $statusColor ?>">
-                                            <?= $this->LANG['status_' . $campaign->status] ?? ucfirst($campaign->status) ?>
-                                        </span>
-                                    </td>
-                                    <td class="text-center" style="width: 140px;">
-                                        <?php if ($campaign->status === 'scheduled' && !empty($campaign->schedule_start)): ?>
-                                            <span class="zapcel-schedule-date">
-                                                <?= date('d/m/Y H:i', strtotime($campaign->schedule_start)) ?>
-                                            </span>
-                                        <?php else: ?>
-                                            <span class="text-muted">—</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td class="text-center" style="width: 80px;">
-                                        <span class="badge badge-sent"><?= number_format($campaign->sent_count) ?></span>
-                                    </td>
-                                    <td class="text-center" style="width: 80px;">
-                                        <span class="badge badge-pending"><?= number_format($campaign->pending_count) ?></span>
-                                    </td>
-                                    <td class="text-center" style="width: 80px;">
-                                        <span class="badge badge-failed"><?= number_format($campaign->failed_count) ?></span>
-                                    </td>
-                                    
-                                    <td class="text-center" style="width: 150px;">
-                                        <?php
-                                            $sent   = (int)$campaign->sent_count;
-                                            $failed = (int)$campaign->failed_count;
-                                            $processed = $sent + $failed;
-                                            
-                                            $sentPct = $processed > 0 ? round(($sent / $processed) * 100, 1) : 0;
-                                            $failPct = $processed > 0 ? round(($failed / $processed) * 100, 1) : 0;
-                                        ?>
-                                        
-                                        <div class="zapcel-progress"
-                                             title="Enviadas: <?= $sent ?> | Falhas: <?= $failed ?> | Processadas: <?= $processed ?>">
-                                          <div class="zapcel-progress-sent" style="width: <?= $sentPct ?>%"></div>
-                                          <div class="zapcel-progress-failed" style="width: <?= $failPct ?>%"></div>
-                                        </div>
-                                        
-                                        <div class="zapcel-progress-label">
-                                          <?= $processed > 0 ? ($sentPct . '% enviadas / ' . $failPct . '% falhas') : '0% (sem envios)' ?>
-                                        </div>
-                                    </td>
-                                    <td class="text-center" style="width: 220px;">
-                                      <div class="btn-group">
-                                    
-                                        <!-- BOTÃO PRINCIPAL: iniciar/pausar/agendar/cancelar agendamento -->
-                                        <?php if ($isFinished): ?>
-                                            <button class="btn btn-sm btn-info"
-                                                    onclick="resetCampaign(<?= (int)$campaign->id ?>)"
-                                                    title="<?php echo $this->LANG['reset'] ?? 'Reiniciar'; ?>">
-                                                <i class="fas fa-redo"></i>
-                                            </button>
-                                        <?php else: ?>
-                                            <button class="btn btn-sm <?= $toggleClass ?>"
-                                                    onclick="toggleCampaign(<?= (int)$campaign->id ?>)"
-                                                    title="<?= htmlspecialchars($toggleTitle) ?>">
-                                                <i class="fas <?= $toggleIcon ?>"></i>
-                                            </button>
-                                        <?php endif; ?>
-                                    
-                                        <!-- EDITAR -->
-                                        <button class="btn btn-sm btn-primary"
-                                                onclick="openCampaignForm(<?= (int)$campaign->id ?>)"
-                                                title="<?php echo $this->LANG['edit'] ?? 'Editar'; ?>">
-                                          <i class="fas fa-edit"></i>
-                                        </button>
-                                    
-                                        <!-- ATIVIDADE -->
-                                        <button class="btn btn-sm btn-success"
-                                                onclick="downloadActivity(<?= (int)$campaign->id ?>)"
-                                                title="<?php echo $this->LANG['activity'] ?? 'Atividade'; ?>">
-                                          <i class="fas fa-chart-line"></i>
-                                        </button>
-                                    
-                                        <!-- DELETAR -->
-                                        <button class="btn btn-sm btn-danger"
-                                                onclick="deleteCampaign(<?= (int)$campaign->id ?>)"
-                                                title="<?php echo $this->LANG['delete'] ?? 'Deletar'; ?>">
-                                          <i class="fas fa-trash"></i>
-                                        </button>
-                                    
-                                      </div>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
-    
-        <!-- Modal para Formulário (será carregado via AJAX) -->
-        <div class="modal fade" id="campaignFormModal" tabindex="-1" role="dialog">
-            <div class="modal-dialog modal-lg" role="document">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h1 class="modal-title" id="campaignFormModalLabel"><?php echo $this->LANG['campaign_form_title'] ?? 'Formulário de Campanha'; ?></h1>
-                        <button type="button" class="close" data-dismiss="modal">
-                            <span>&times;</span>
-                        </button>
-                    </div>
-                    <div class="modal-body" id="campaignFormContent">
-                        <!-- Conteúdo carregado via AJAX -->
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-dismiss="modal"><?php echo $this->LANG['cancel'] ?? 'Cancelar'; ?></button>
-                        <button type="button" class="btn btn-primary" onclick="saveCampaign()"><?php echo $this->LANG['save'] ?? 'Salvar'; ?></button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    
-
-<script>
-function openCampaignForm(campaignId) {
-    campaignId = campaignId || 0;
-    
-    $.ajax({
-        url: 'addonmodules.php?module=zapcel&action=ajax',
-        type: 'POST',
-        data: {
-            subaction: 'get_campaign_form',
-            campaign_id: campaignId
-        },
-        dataType: 'json',
-        success: function(response) {
-            console.log('Response:', response);
-            
-            if (response.status === 'success') {
-                $('#campaignFormContent').html(response.html);
-                $('#campaignFormModal').modal('show');
-            } else {
-                Swal.fire({
-                    icon: 'error',
-                    title: 'Erro',
-                    text: response.message || 'Erro ao carregar formulário'
-                });
-            }
-        },
-        error: function(xhr, status, error) {
-            console.error('AJAX Error:', xhr.responseText);
-            Swal.fire({
-                icon: 'error',
-                title: 'Erro de Comunicação',
-                text: 'Erro ao conectar com o servidor: ' + error,
-                footer: '<pre>' + xhr.responseText.substring(0, 500) + '</pre>'
-            });
-        }
-    });
-}
-
-function saveCampaign() {
-    const formData = $('#campaignForm').serializeArray();
-    formData.push({ name: 'subaction', value: 'save_campaign' });
-
-    $.ajax({
-        url: 'addonmodules.php?module=zapcel&action=ajax',
-        type: 'POST',
-        data: formData,
-        dataType: 'json',
-        success: function (response) {
-            const ok = (response && (response.success === true || response.status === 'success'));
-            const msg = (response && (response.message || response.error)) ? (response.message || response.error) : 'Resposta inválida do servidor';
-
-            if (ok) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Sucesso!',
-                    text: msg
-                }).then(() => {
-                    window.location.reload();
-                });
-            } else {
-                Swal.fire({
-                    icon: 'error',
-                    title: 'Erro',
-                    text: msg || 'Erro ao salvar campanha'
-                });
-            }
-        },
-        error: function (xhr, status, error) {
-            console.error('Erro AJAX:', xhr.responseText);
-
-            // mostra o início da resposta REAL (isso revela o lixo que está quebrando o JSON)
-            let raw = (xhr && xhr.responseText) ? xhr.responseText.trim() : '';
-            raw = raw.substring(0, 300);
-
-            Swal.fire({
-                icon: 'error',
-                title: 'Erro de Comunicação',
-                text: 'Erro ao salvar: ' + error + (raw ? (' | Resp: ' + raw) : '')
-            });
-        }
-    });
-}
-
-
-function resetCampaign(campaignId) {
-    Swal.fire({
-        title: 'Confirmar Reset',
-        text: 'Isso irá zerar os contadores e re-enfileirar a campanha. Continuar?',
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonText: 'Sim, resetar',
-        cancelButtonText: 'Cancelar'
-    }).then((result) => {
-        if (result.isConfirmed) {
-            $.ajax({
-                url: 'addonmodules.php?module=zapcel&action=ajax',
-                type: 'POST',
-                data: {
-                    subaction: 'reset_campaign',
-                    campaign_id: campaignId
-                },
-                dataType: 'json',
-                success: function(response) {
-                    if (response.success === true) {
-                        Swal.fire({
-                            icon: 'success',
-                            title: 'Sucesso!',
-                            text: response.message
-                        }).then(() => {
-                            window.location.reload();
-                        });
-                    } else {
-                        Swal.fire({
-                            icon: 'error',
-                            title: 'Erro',
-                            text: response.message
-                        });
-                    }
-                },
-                error: function(xhr, status, error) {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Erro',
-                        text: 'Erro ao resetar: ' + error
-                    });
-                }
-            });
-        }
-    });
-}
-
-function deleteCampaign(campaignId) {
-    Swal.fire({
-        title: 'Confirmar Exclusão',
-        text: 'Isso irá deletar a campanha e todos os registros relacionados. Continuar?',
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonText: 'Sim, deletar',
-        cancelButtonText: 'Cancelar',
-        confirmButtonColor: '#d33'
-    }).then((result) => {
-        if (result.isConfirmed) {
-            $.ajax({
-                url: 'addonmodules.php?module=zapcel&action=ajax',
-                type: 'POST',
-                data: {
-                    subaction: 'delete_campaign',
-                    campaign_id: campaignId
-                },
-                dataType: 'json',
-                success: function(response) {
-                    const ok = (response && (response.success === true || response.success === 'success'));
-                    const msg = (response && (response.message || response.error)) ? (response.message || response.error) : 'Resposta inválida do servidor.';
-
-                    if (ok) {
-                        Swal.fire({
-                            icon: 'success',
-                            title: 'Sucesso!',
-                            text: msg
-                        }).then(() => {
-                            // Remove a linha da campanha sem recarregar a página
-                            const $btn = $('button[onclick*="deleteCampaign(' + campaignId + '"]');
-                            const $row = $btn.closest('tr');
-
-                            if ($row.length) {
-                                $row.fadeOut(200, function () { $(this).remove(); });
-                            } else {
-                                // fallback caso não encontre a linha
-                                window.location.reload();
-                            }
-                        });
-                    } else {
-                        Swal.fire({
-                            icon: 'error',
-                            title: 'Erro',
-                            text: msg
-                        });
-                    }
-                },
-                error: function(xhr) {
-                    const msg =
-                        (xhr && xhr.responseJSON && (xhr.responseJSON.message || xhr.responseJSON.error)) ||
-                        (xhr && xhr.responseText) ||
-                        'Erro ao deletar.';
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Erro',
-                        text: msg
-                    });
-                }
-            });
-        }
-    });
-}
-
-
-function toggleCampaign(campaignId) {
-    $.ajax({
-        url: 'addonmodules.php?module=zapcel&action=ajax',
-        type: 'POST',
-        data: {
-            subaction: 'toggle_campaign',
-            campaign_id: campaignId
-        },
-        dataType: 'json',
-        success: function(response) {
-            if (response.status === 'success') {
-                window.location.reload();
-            } else {
-                Swal.fire({
-                    icon: 'error',
-                    title: 'Erro',
-                    text: response.message
-                });
-            }
-        },
-        error: function(xhr, status, error) {
-            Swal.fire({
-                icon: 'error',
-                title: 'Erro',
-                text: 'Erro ao alterar status: ' + error
-            });
-        }
-    });
-}
-
-function downloadActivity(campaignId) {
-    $.ajax({
-        url: 'addonmodules.php?module=zapcel&action=ajax',
-        type: 'POST',
-        data: {
-            subaction: 'get_campaign_activity',
-            campaign_id: campaignId
-        },
-        dataType: 'json',
-        success: function(response) {
-            if (response.status === 'success') {
-                // Cria blob e faz download
-                const blob = new Blob([response.content], { type: 'text/plain' });
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = response.filename;
-                document.body.appendChild(a);
-                a.click();
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(a);
-            } else {
-                Swal.fire({
-                    icon: 'error',
-                    title: 'Erro',
-                    text: response.message
-                });
-            }
-        },
-        error: function(xhr, status, error) {
-            Swal.fire({
-                icon: 'error',
-                title: 'Erro',
-                text: 'Erro ao gerar relatório: ' + error
-            });
-        }
-    });
-}
-</script>
-    
-        <?php
-        return ob_get_clean();
-    }
-
-    /**
-     * Manipula requisições AJAX
-     */
-    private function handleAjax()
-    {
-        // Limpa qualquer output anterior
-        if (ob_get_level()) {
-            ob_end_clean();
-        }
-        
-        header('Content-Type: application/json');
-        $subaction = $_POST['subaction'] ?? '';
-        
-        switch ($subaction) {
-            case 'deactivate_template':
-                return $this->ajaxDeactivateTemplate();
-            case 'activate_template':
-                return $this->ajaxActivateTemplate();
-            case 'delete_template':
-                return $this->ajaxDeleteTemplate();
-            case 'create_template':
-                return $this->ajaxCreateTemplate();
-            case 'resend_validation':
-                return $this->ajaxResendValidation();
-            case 'get_validation_details':
-                return $this->ajaxGetValidationDetails();
-            case 'reset_validation':
-                return $this->ajaxResetValidation();
-            case 'send_pending_validations':
-                return $this->ajaxSendPendingValidations();
-            case 'install_gateway':
-                return $this->ajaxInstallGateway();
-            case 'toggle_gateway':
-                return $this->ajaxToggleGateway();
-            case 'remove_gateway':
-                return $this->ajaxRemoveGateway();
-            case 'get_log_details':
-                return $this->ajaxGetLogDetails();
-            case 'delete_log':
-                return $this->ajaxDeleteLog();
-            case 'clear_logs':
-                return $this->ajaxClearLogs();
-            case 'save_settings':
-                return $this->ajaxSaveSettings();
-            case 'test_connection':
-                return $this->ajaxTestConnection();
-            case 'clear_cache':
-                return $this->ajaxClearCache();
-            case 'sync_templates':
-                return $this->ajaxSyncTemplates();
-            case 'export_settings':
-                return $this->ajaxExportSettings();
-            case 'import_settings':
-                return $this->ajaxImportSettings();
-            case 'send_test_message':
-                return $this->ajaxSendTestMessage();
-            case 'update_template':
-                return $this->ajaxUpdateTemplate();
-            case 'send_invoice_reminder':
-                return $this->ajaxSendInvoiceReminder();
-            case 'clear_templates_cache':
-                return $this->ajaxClearTemplatesCache();
-            case 'set_active_gateway':
-                return $this->ajaxSetActiveGateway(); 
-            case 'get_campaign_form':
-                return $this->ajaxGetCampaignForm();
-            case 'save_campaign':
-                return $this->ajaxSaveCampaign();
-            case 'reset_campaign':
-                return $this->ajaxResetCampaign();
-            case 'delete_campaign':
-                return $this->ajaxDeleteCampaign();
-            case 'toggle_campaign':
-                return $this->ajaxToggleCampaign();
-            case 'get_campaign_activity':
-                return $this->ajaxGetCampaignActivity();
-            default:
-                return json_encode(['success' => false, 'error' => $this->LANG['unrecognized_action']]);
-        }
-    }
-
-    private function ajaxExportSettings() {
-        try {
-            $settings = $this->getSettings();
-            
-            // Remove dados sensíveis
-            unset($settings['zapcel_access_token']);
-            unset($settings['zapcel_instance_id']);
-            
-            $exportData = [
-                'module' => 'zapcel',
-                'version' => '2.1.0',
-                'export_date' => date('Y-m-d H:i:s'),
-                'settings' => $settings,
-                'templates_count' => Capsule::table('mod_zapcel_templates')->count(),
-                'statistics' => [
-                    'total_messages' => Capsule::table('mod_zapcel_logs')
-                        ->where(function($query) {
-                            $query->where('event_type', 'NOT LIKE', 'debug_%')
-                                  ->where('event_type', '!=', 'gateway_manager_debug')
-                                  ->where('event_type', '!=', 'system_log');
-                        })
-                        ->whereIn('success', [0, 1])
-                        ->count(),
-                    'active_templates' => Capsule::table('mod_zapcel_templates')->where('active', 1)->count(),
-                ]
-            ];
-            
-            // Log da ação
-            $adminName = $_SESSION['adminid'] ? Capsule::table('tbladmins')->where('id', $_SESSION['adminid'])->value('username') : 'Unknown';
-            logActivity("Zapcel: " . $this->LANG['settings_exported_by_admin'] . " ({$adminName})");
-            
-            return json_encode([
-                'success' => true,
-                'filename' => 'zapcel_backup_' . date('Y-m-d_H-i-s') . '.json',
-                'data' => $exportData
-            ]);
-            
-        } catch (\Throwable $e) {
-            return json_encode([
-                'success' => false, 
-                'error' => $e->getMessage()
-            ]);
-        }
-    }
-
-    private function ajaxImportSettings() {
-        try {
-            if (!isset($_FILES['import_file'])) {
-                return json_encode(['success' => false, 'error' => 'Nenhum arquivo enviado']);
-            }
-            
-            $fileContent = file_get_contents($_FILES['import_file']['tmp_name']);
-            $importData = json_decode($fileContent, true);
-            
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                return json_encode(['success' => false, 'error' => 'Arquivo JSON inválido']);
-            }
-            
-            // Valida e importa configurações
-            foreach ($importData['settings'] as $key => $value) {
-                if (!in_array($key, ['zapcel_access_token', 'zapcel_instance_id'])) {
-                    Capsule::table('tbladdonmodules')->updateOrInsert(
-                        ['module' => 'zapcel', 'setting' => $key],
-                        ['value' => $value]
-                    );
-                }
-            }
-            
-            logActivity("Zapcel: " . $this->LANG['settings_imported_by_admin']);
-            
-            return json_encode(['success' => true, 'message' => $this->LANG['import_success']]);
-            
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxClearTemplatesCache() {
-        try {
-            // Limpa APENAS cache de templates, sem mexer em estatísticas
-            $this->clearTemplatesCacheOnly();
-            
-            return json_encode([
-                'success' => true, 
-                'message' => $this->LANG['cache_templates_cleared']
-            ]);
-            
-        } catch (\Throwable $e) {
-            return json_encode([
-                'success' => false, 
-                'error' => $this->LANG['cache_clear_error'] . ': ' . $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
-     * AJAX: Define gateway ativo
-     */
-    private function ajaxSetActiveGateway()
-    {
-        try {
-            $gateway = $_POST['gateway'] ?? '';
-            
-            // Valida gateway
-            if (empty($gateway)) {
-                return json_encode([
-                    'success' => false,
-                    'error' => zapcel_trans('invalid_gateway')
-                ]);
-            }
-            
-            // Se não for 'none', verifica se o arquivo existe
-            if ($gateway !== 'none') {
-                $gatewayFile = __DIR__ . '/../gateways/' . ucfirst($gateway) . 'Gateway.php';
-                
-                if (!file_exists($gatewayFile)) {
-                    return json_encode([
-                        'success' => false,
-                        'error' => zapcel_trans('gateway_file_not_found')
-                    ]);
-                }
-            }
-            
-            // Verifica se já existe configuração
-            $exists = Capsule::table('tbladdonmodules')
-                ->where('module', 'zapcel')
-                ->where('setting', 'zapcel_active_gateway')
-                ->exists();
-            
-            if ($exists) {
-                // Atualiza
-                Capsule::table('tbladdonmodules')
-                    ->where('module', 'zapcel')
-                    ->where('setting', 'zapcel_active_gateway')
-                    ->update(['value' => $gateway]);
-            } else {
-                // Insere
-                Capsule::table('tbladdonmodules')->insert([
-                    'module' => 'zapcel',
-                    'setting' => 'zapcel_active_gateway',
-                    'value' => $gateway
-                ]);
-            }
-            
-            // Mensagem de sucesso
-            $message = ($gateway === 'none') 
-                ? zapcel_trans('gateway_deactivated_success')
-                : zapcel_trans('gateway_activated_success') . ' ' . ucfirst($gateway);
-            
-            return json_encode([
-                'success' => true,
-                'message' => $message
-            ]);
-            
-        } catch (\Exception $e) {
-            return json_encode([
-                'success' => false,
-                'error' => zapcel_trans('error_saving_gateway') . ': ' . $e->getMessage()
-            ]);
-        }
-    }
-
-    private function clearTemplatesCacheOnly() {
-        // Limpa APENAS cache relacionado a templates
-        // Exemplo: arquivos temporários de templates compilados
-        
-        $cacheDirs = [
-            // Diretórios específicos de cache de templates
-            __DIR__ . '/../templates_cache/',
-            __DIR__ . '/../compiled_templates/',
-        ];
-        
-        foreach ($cacheDirs as $dir) {
-            if (is_dir($dir)) {
-                $this->clearDirectory($dir, 'tpl'); // Limpa apenas arquivos .tpl
-            }
-        }
-        
-        logActivity("Zapcel: " . $this->LANG['cache_cleared_by_admin']);
-    }
-
-    private function clearDirectory($dir, $extension = '') {
-        // Limpa apenas arquivos com extensão específica
-        $files = glob($dir . '*' . $extension);
-        foreach ($files as $file) {
-            if (is_file($file)) {
-                unlink($file);
-            }
-        }
-    }
-    
-    private function ajaxUpdateTemplate()
-    {
-        try {
-            // Recebe dados diretamente do POST
-            $id = (int)($_POST['template_id'] ?? 0);
-            $name = trim($_POST['name'] ?? '');
-            $content = trim($_POST['template'] ?? '');
-            $active = isset($_POST['active']) && $_POST['active'] == '1' ? 1 : 0;
-            
-            // Validação mais detalhada
-            if (!$id) {
-                return json_encode(['success' => false, 'error' => $this->LANG['invalid_id']]);
-            }
-            
-            if ($name === '') {
-                return json_encode(['success' => false, 'error' => $this->LANG['template_name_required']]);
-            }
-            
-            if ($content === '') {
-                return json_encode(['success' => false, 'error' => $this->LANG['template_content_required']]);
-            }
-            
-            Capsule::table('mod_zapcel_templates')
-                ->where('id', $id)
-                ->update([
-                    'name' => $name,
-                    'template' => $content,
-                    'active' => $active,
-                    'updated_at' => date('Y-m-d H:i:s')
-                ]);
-                
-            return json_encode(['success' => true, 'message' => $this->LANG['template_updated']]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-    
-    /* ═══════════════════════════════════════════════════════════════════
-     * FUNÇÕES DE CAMPANHAS - ADICIONAR ANTES DO FECHAMENTO DA CLASSE
-     * ═══════════════════════════════════════════════════════════════════ */
-    
-    /**
-     * Retorna o formulário de criação/edição de campanha
-    */
-    private function ajaxGetCampaignForm()
-    {
-        try {
-            $campaignId = (int) ($_POST['campaign_id'] ?? 0);
-            
-            $campaign = null;
-            if ($campaignId > 0) {
-                $campaign = Capsule::table('mod_zapcel_campaigns')->find($campaignId);
-            }
-            
-            // Busca produtos/serviços do WHMCS
-            $products = Capsule::table('tblproducts')
-                ->where('hidden', 0)
-                ->orderBy('name')
-                ->get();
-            
-            ob_start();
-            ?>
-            <form id="campaignForm">
-                <input type="hidden" name="campaign_id" value="<?= $campaignId ?>">
-                
-                <!-- Nome da Campanha e Idioma na mesma linha -->
-                <div class="row">
-                    <div class="col-md-8">
-                        <div class="form-group">
-                            <label class="font-weight-bold"><?php echo $this->LANG['campaign_name'] ?? 'Nome da Campanha'; ?></label>
-                            <input type="text" name="name" class="form-control" value="<?= $campaign->name ?? '' ?>" required placeholder="<?php echo $this->LANG['campaign_name'] ?? 'Nome da Campanha'; ?>">
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label class="font-weight-bold"><?php echo $this->LANG['language'] ?? 'Idioma'; ?></label>
-                            <select name="language" class="form-control">
-                                <option value="pt" <?= ($campaign->language ?? 'pt') === 'pt' ? 'selected' : '' ?>>Português</option>
-                                <option value="en" <?= ($campaign->language ?? 'pt') === 'en' ? 'selected' : '' ?>>English</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Filtros: Produto em uma linha; Status Serviço + Status Cliente na linha abaixo -->
-                <div class="row">
-                    <div class="col-md-12">
-                        <div class="form-group">
-                            <label class="font-weight-bold"><?php echo $this->LANG['target_products'] ?? 'Tipo'; ?></label>
-                            <select name="product_ids[]" class="form-control select2" multiple style="width: 100%;">
-                                <?php 
-                                $selectedProducts = $campaign ? json_decode($campaign->filters, true)['product_ids'] ?? [] : [];
-                                foreach ($products as $product): 
-                                ?>
-                                <option value="<?= $product->id ?>" <?= in_array($product->id, $selectedProducts) ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($product->name) ?>
-                                </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="row">
-                    <div class="col-md-6">
-                        <div class="form-group">
-                            <label class="font-weight-bold"><?php echo $this->LANG['service_status'] ?? 'Status'; ?></label>
-                            <select name="service_status[]" class="form-control select2" multiple style="width: 100%;">
-                                <?php 
-                                $selectedServiceStatus = $campaign ? json_decode($campaign->filters, true)['service_status'] ?? [] : [];
-                                $serviceStatuses = ['Active' => 'Ativo', 'Suspended' => 'Suspenso', 'Terminated' => 'Encerrado', 'Cancelled' => 'Cancelado'];
-                                foreach ($serviceStatuses as $key => $label): 
-                                ?>
-                                <option value="<?= $key ?>" <?= in_array($key, $selectedServiceStatus) ? 'selected' : '' ?>>
-                                    <?= $label ?>
-                                </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                
-                    <div class="col-md-6">
-                        <div class="form-group">
-                            <label class="font-weight-bold"><?php echo $this->LANG['client_status'] ?? 'Status Cliente'; ?></label>
-                            <select name="client_status[]" class="form-control select2" multiple style="width: 100%;">
-                                <?php 
-                                $selectedClientStatus = $campaign ? json_decode($campaign->filters, true)['client_status'] ?? [] : [];
-                                $clientStatuses = ['Active' => 'Ativo', 'Inactive' => 'Inativo', 'Closed' => 'Fechado'];
-                                foreach ($clientStatuses as $key => $label): 
-                                ?>
-                                <option value="<?= $key ?>" <?= in_array($key, $selectedClientStatus) ? 'selected' : '' ?>>
-                                    <?= $label ?>
-                                </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Template da Mensagem -->
-                <div class="form-group">
-                    <label class="font-weight-bold"><?php echo $this->LANG['message_template'] ?? 'Template da Mensagem'; ?></label>
-                    
-                    <!-- Barra de Ferramentas (IGUAL À IMAGEM) -->
-                    <div class="whatsapp-toolbar" style="background: #f8f9fa; border: 1px solid #dee2e6; border-bottom: none; padding: 8px; border-radius: 4px 4px 0 0;">
-                        <div class="btn-group btn-group-sm" role="group">
-                            <button type="button" class="btn btn-outline-secondary format-btn-campaign" data-format="bold" title="Negrito">
-                                <i class="fas fa-bold"></i>
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary format-btn-campaign" data-format="italic" title="Itálico">
-                                <i class="fas fa-italic"></i>
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary format-btn-campaign" data-format="strikethrough" title="Riscado">
-                                <i class="fas fa-strikethrough"></i>
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary format-btn-campaign" data-format="monospace" title="Código">
-                                <i class="fas fa-code"></i>
-                            </button>
-                        </div>
-                        <div class="btn-group btn-group-sm ml-2" role="group">
-                            <button type="button" class="btn btn-outline-secondary" id="emojiPickerBtnCampaign" title="Emojis">
-                                <i class="far fa-smile"></i> Emojis
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <textarea name="message_template" id="campaignMessageTextarea" class="form-control" rows="10" 
-                            placeholder="<?php echo $this->LANG['enter_message_template'] ?? 'Digite a mensagem da campanha...'; ?>" 
-                            style="border-radius: 0 0 4px 4px; font-family: 'Segoe UI', sans-serif;"><?= $campaign->message_template ?? '' ?></textarea>
-                    
-                    <small class="form-text text-muted">
-                        <?php echo $this->LANG['use_variables_in_braces'] ?? 'Use variáveis entre chaves {assinatura}. Selecione o texto e clique nos botões para formatar.'; ?>
-                    </small>
-                    
-                    <!-- Painel de Emojis COMPLETO (TODOS OS EMOJIS COMO NA IMAGEM) -->
-                    <div id="emojiPanelCampaign" class="card mt-2" style="display: none; max-height: 300px; overflow-y: auto;">
-                        <div class="card-body p-2">
-                            <div class="emoji-grid" style="display: grid; grid-template-columns: repeat(10, 1fr); gap: 5px; font-size: 24px; text-align: center;">
-                                <!-- Status e Ações -->
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Verificado">✅</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Check">✔️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Erro">❌</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="X">✖️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Atenção">⚠️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Importante">❗</span>
-                                
-                                <!-- Setas -->
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Seta Direita">➡️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Seta Esquerda">⬅️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Seta Cima">⬆️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Seta Baixo">⬇️</span>
-                                
-                                <!-- Controles -->
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Play">▶️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Pausa">⏸️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Stop">⏹️</span>
-                                
-                                <!-- Formas Geométricas -->
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Círculo">⭕</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Círculo Preto">●</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Quadrado Preto">◼️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Quadrado Branco">◻️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Quadrado Médio">◾</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Quadrado Pequeno">▫️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Ponto">▪️</span>
-                                
-                                <!-- Símbolos Matemáticos -->
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Mais">➕</span>
-                                <span class="emoji-item-edit" style="cursor: pointer;" title="Menos">➖</span>
-                                
-                                <!-- Ícones Gerais -->
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Estrela">⭐</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Email">✉️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Telefone">☎️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Rápido">⚡</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Informação">ℹ️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Configurações">⚙️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Reciclar">♻️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Relógio">⏰</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Marca Registrada">™️</span>
-                                <span class="emoji-item-campaign" style="cursor: pointer;" title="Preto">⚫</span>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Variáveis ABAIXO do campo mensagem -->
-                    <div class="mt-2">
-                        <div class="mt-1">
-                            <span class="badge badge-info variable-item-campaign" style="cursor: pointer; margin: 2px;">{cliente}</span>
-                            <span class="badge badge-info variable-item-campaign" style="cursor: pointer; margin: 2px;">{email}</span>
-                            <span class="badge badge-info variable-item-campaign" style="cursor: pointer; margin: 2px;">{telefone}</span>
-                            <span class="badge badge-info variable-item-campaign" style="cursor: pointer; margin: 2px;">{dominio}</span>
-                            <span class="badge badge-info variable-item-campaign" style="cursor: pointer; margin: 2px;">{empresa}</span>
-                            <span class="badge badge-info variable-item-campaign" style="cursor: pointer; margin: 2px;">{url_whmcs}</span>
-                            <span class="badge badge-info variable-item-campaign" style="cursor: pointer; margin: 2px;">{assinatura}</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Data/Hora de Início e Modo de Envio na mesma linha -->
-                <div class="row">
-                    <div class="col-md-6">
-                        <div class="form-group">
-                            <label class="font-weight-bold"><?php echo $this->LANG['schedule_start'] ?? 'Data/Hora de Início'; ?></label>
-                            <input type="datetime-local" name="schedule_start" class="form-control" 
-                                   value="<?= $campaign && isset($campaign->schedule_start) ? date('Y-m-d\TH:i', strtotime($campaign->schedule_start)) : '' ?>">
-                            <small class="form-text text-muted">
-                                <?php echo $this->LANG['schedule_help'] ?? 'Deixe em branco para iniciar imediatamente ao ativar.'; ?>
-                            </small>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="form-group">
-                            <label class="font-weight-bold"><?php echo $this->LANG['send_mode'] ?? 'Modo de Envio'; ?></label>
-                            <select name="send_mode" class="form-control">
-                                <option value="all_day" <?= (isset($campaign->send_mode) && $campaign->send_mode === 'all_day') ? 'selected' : '' ?>>
-                                    <?php echo $this->LANG['all_day'] ?? 'Dia Todo (24h)'; ?>
-                                </option>
-                                <option value="business_hours" <?= (!isset($campaign->send_mode) || $campaign->send_mode === 'business_hours') ? 'selected' : '' ?>>
-                                    <?php echo $this->LANG['business_hours'] ?? 'Horário Comercial (07:00 às 18:00)'; ?>
-                                </option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Delay -->
-                <div class="row">
-                    <div class="col-md-6">
-                        <div class="form-group">
-                            <label class="font-weight-bold"><?php echo $this->LANG['delay_min'] ?? 'Delay Mínimo (segundos)'; ?></label>
-                            <input type="number" name="delay_min" class="form-control" min="7" max="60" 
-                                   value="<?= isset($campaign->delay_min) ? $campaign->delay_min : 7 ?>" required>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="form-group">
-                            <label class="font-weight-bold"><?php echo $this->LANG['delay_max'] ?? 'Delay Máximo (segundos)'; ?></label>
-                            <input type="number" name="delay_max" class="form-control" min="7" max="60" 
-                                   value="<?= isset($campaign->delay_max) ? $campaign->delay_max : 13 ?>" required>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="alert alert-info">
-                    <i class="fas fa-info-circle mr-2"></i>
-                    <?php echo $this->LANG['delay_info'] ?? 'O sistema aplica, além do delay do Zapcel, um atraso aleatório entre 7 e 13 segundos em cada envio.'; ?>
-                </div>
-            </form>
-            
-            <script>
-            $(document).ready(function() {
-                // Formatação
-                $('.format-btn-campaign').click(function() {
-                    const format = $(this).data('format');
-                    const textarea = document.getElementById('campaignMessageTextarea');
-                    const start = textarea.selectionStart;
-                    const end = textarea.selectionEnd;
-                    const text = textarea.value;
-                    const selectedText = text.substring(start, end);
-                    
-                    let before = '', after = '';
-                    switch(format) {
-                        case 'bold': before = after = '*'; break;
-                        case 'italic': before = after = '_'; break;
-                        case 'strikethrough': before = after = '~'; break;
-                        case 'monospace': before = after = '```'; break;
-                    }
-                    
-                    const newText = text.substring(0, start) + before + selectedText + after + text.substring(end);
-                    textarea.value = newText;
-                    textarea.focus();
-                    textarea.setSelectionRange(start + before.length, end + before.length);
-                });
-                
-                // Emojis
-                $('#emojiPickerBtnCampaign').click(function() {
-                    $('#emojiPanelCampaign').toggle();
-                });
-                
-                $('.emoji-item-campaign').click(function() {
-                    const emoji = $(this).text();
-                    const textarea = document.getElementById('campaignMessageTextarea');
-                    const start = textarea.selectionStart;
-                    const text = textarea.value;
-                    textarea.value = text.substring(0, start) + emoji + text.substring(start);
-                    textarea.focus();
-                    textarea.setSelectionRange(start + emoji.length, start + emoji.length);
-                });
-                
-                // Variáveis
-                $('.variable-item-campaign').click(function() {
-                    const variable = $(this).text();
-                    const textarea = document.getElementById('campaignMessageTextarea');
-                    const start = textarea.selectionStart;
-                    const text = textarea.value;
-                    textarea.value = text.substring(0, start) + variable + text.substring(start);
-                    textarea.focus();
-                    textarea.setSelectionRange(start + variable.length, start + variable.length);
-                });
-                
-                // Inicializa Select2
-                setTimeout(function() {
-                    $('.select2').select2({
-                        dropdownParent: $('#campaignFormModal')
-                    });
-                }, 100);
-            });
-            </script>
-            <?php
-            
-            $html = ob_get_clean();
-            
-            return json_encode([
-                'status' => 'success',
-                'html' => $html
-            ]);
-            
-        } catch (Exception $e) {
-            return json_encode([
-                'status' => 'error',
-                'message' => 'Erro ao carregar formulário: ' . $e->getMessage()
-            ]);
-        }
-    }
-    
-    /**
-     * Altera o status de uma campanha (ativar/pausar)
-     * ADICIONAR ESTA FUNÇÃO NO index.php JUNTO COM AS OUTRAS FUNÇÕES DE CAMPANHAS
-     */
-    /**
-    /*private function ajaxToggleCampaign()
-    {
-        try {
-            $campaignId = (int) ($_POST['campaign_id'] ?? 0);
-            $newStatus  = $_POST['status'] ?? '';
-    
-            if ($campaignId <= 0) {
-                return json_encode([
-                    'status' => 'error',
-                    'message' => 'Campanha inválida'
-                ]);
-            }
-    
-            if (!in_array($newStatus, ['active', 'paused', 'draft'])) {
-                return json_encode([
-                    'status' => 'error',
-                    'message' => 'Status inválido'
-                ]);
-            }
-    
-            $campaign = Capsule::table('mod_zapcel_campaigns')->find($campaignId);
-            if (!$campaign) {
-                return json_encode([
-                    'status' => 'error',
-                    'message' => 'Campanha não encontrada'
-                ]);
-            }
-    
-            // ===== ATIVAÇÃO REAL DA CAMPANHA =====
-            if ($newStatus === 'active') {
-    
-                $filters = json_decode($campaign->filters, true);
-                if (!is_array($filters)) {
-                    return json_encode([
-                        'status' => 'error',
-                        'message' => 'Filtros da campanha inválidos'
-                    ]);
-                }
-    
-                // Enfileira destinatários (materializa campanha)
-                $this->enqueueCampaign($campaignId);
-                $total = (int) Capsule::table('mod_zapcel_campaign_queue')
-                    ->where('campaign_id', $campaignId)
-                    ->count();
-    
-                Capsule::table('mod_zapcel_campaigns')
-                    ->where('id', $campaignId)
-                    ->update([
-                        'status'         => 'active',
-                        'total_contacts' => $total,
-                        'pending_count'  => $total,
-                        'sent_count'     => 0,
-                        'failed_count'   => 0,
-                        'updated_at'     => date('Y-m-d H:i:s'),
-                    ]);
-    
-                return json_encode([
-                    'status'  => 'success',
-                    'message' => "Campanha ativada com sucesso. $total contatos enfileirados."
-                ]);
-            }
-    
-            // ===== PAUSE / DRAFT (COMPORTAMENTO ANTIGO) =====
-            Capsule::table('mod_zapcel_campaigns')
-                ->where('id', $campaignId)
-                ->update([
-                    'status'     => $newStatus,
-                    'updated_at' => date('Y-m-d H:i:s'),
-                ]);
-    
-            return json_encode([
-                'status'  => 'success',
-                'message' => 'Status alterado com sucesso!'
-            ]);
-    
-        } catch (Exception $e) {
-            return json_encode([
-                'status'  => 'error',
-                'message' => $e->getMessage()
-            ]);
-        }
-    }*/
-    
-    /**
-     * Toggle inteligente de campanha
-     * Regras:
-     * - draft  -> (schedule_start futuro ? scheduled : active) + ENFILEIRA + zera contadores
-     * - paused -> (schedule_start futuro ? scheduled : active) + NÃO enfileira (só retoma)
-     * - active -> paused
-     * - scheduled -> paused (cancela agendamento)
-     * - finished -> não toggla (usa reset)
-     */
-    private function ajaxToggleCampaign()
-    {
-        try {
-            $campaignId = (int) ($_POST['campaign_id'] ?? 0);
-    
-            if ($campaignId <= 0) {
-                return json_encode([
-                    'status'  => 'error',
-                    'message' => 'Campanha inválida'
-                ]);
-            }
-    
-            $campaign = Capsule::table('mod_zapcel_campaigns')->find($campaignId);
-            if (!$campaign) {
-                return json_encode([
-                    'status'  => 'error',
-                    'message' => 'Campanha não encontrada'
-                ]);
-            }
-    
-            $current = (string) ($campaign->status ?? 'draft');
-    
-            if ($current === 'finished') {
-                return json_encode([
-                    'status'  => 'error',
-                    'message' => 'Campanha finalizada. Use Reset para reenfileirar.'
-                ]);
-            }
-    
-            $nowTs = time();
-            $isFuture = (!empty($campaign->schedule_start) && strtotime($campaign->schedule_start) > $nowTs);
-    
-            // Decide o próximo status
-            $target = $current;
-    
-            if ($current === 'active') {
-                $target = 'paused';
-            } elseif ($current === 'scheduled') {
-                // cancela agendamento
-                $target = 'paused';
-            } elseif ($current === 'paused') {
-                // retoma
-                $target = $isFuture ? 'scheduled' : 'active';
-            } else {
-                // draft (ou qualquer outro)
-                $target = $isFuture ? 'scheduled' : 'active';
-            }
-    
-            // ===== 1) Se saiu de draft -> (active/scheduled): ENFILEIRA + zera contadores =====
-            $fromDraft = ($current === 'draft');
-    
-            if ($fromDraft && in_array($target, ['active', 'scheduled'], true)) {
-                // Enfileira destinatários (materializa)
-                $this->enqueueCampaign($campaignId);
-    
-                // Total real da fila
-                $total = (int) Capsule::table('mod_zapcel_campaign_queue')
-                    ->where('campaign_id', $campaignId)
-                    ->count();
-    
-                Capsule::table('mod_zapcel_campaigns')
-                    ->where('id', $campaignId)
-                    ->update([
-                        'status'         => $target,
-                        'total_contacts' => $total,
-                        'pending_count'  => $total,
-                        'sent_count'     => 0,
-                        'failed_count'   => 0,
-                        'updated_at'     => date('Y-m-d H:i:s'),
-                    ]);
-    
-                return json_encode([
-                    'status'  => 'success',
-                    'message' => ($target === 'scheduled'
-                        ? "Campanha agendada com sucesso. $total contatos enfileirados."
-                        : "Campanha iniciada com sucesso. $total contatos enfileirados."
-                    )
-                ]);
-            }
-    
-            // ===== 2) Se foi resume (paused -> active/scheduled): NÃO enfileira, só muda status =====
-            if ($current === 'paused' && in_array($target, ['active', 'scheduled'], true)) {
-    
-                // Recalcula pending_count real (pending + processing), sem zerar histórico
-                $pendingReal = (int) Capsule::table('mod_zapcel_campaign_queue')
-                    ->where('campaign_id', $campaignId)
-                    ->whereIn('status', ['pending', 'processing'])
-                    ->count();
-    
-                Capsule::table('mod_zapcel_campaigns')
-                    ->where('id', $campaignId)
-                    ->update([
-                        'status'        => $target,
-                        'pending_count' => $pendingReal,
-                        'updated_at'    => date('Y-m-d H:i:s'),
-                    ]);
-    
-                return json_encode([
-                    'status'  => 'success',
-                    'message' => ($target === 'scheduled'
-                        ? 'Campanha reagendada com sucesso!'
-                        : 'Campanha retomada com sucesso!'
-                    )
-                ]);
-            }
-    
-            // ===== 3) Pausar / cancelar agendamento: só muda status =====
-            Capsule::table('mod_zapcel_campaigns')
-                ->where('id', $campaignId)
-                ->update([
-                    'status'     => $target,
-                    'updated_at' => date('Y-m-d H:i:s'),
-                ]);
-    
-            return json_encode([
-                'status'  => 'success',
-                'message' => ($target === 'paused' ? 'Campanha pausada com sucesso!' : 'Status alterado com sucesso!')
-            ]);
-    
-        } catch (Exception $e) {
-            return json_encode([
-                'status'  => 'error',
-                'message' => $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
-     * Salva uma campanha (criar ou editar)
-     */
-        private function ajaxSaveCampaign()
-    {   
-        try {
-            $campaignId = (int) ($_POST['campaign_id'] ?? 0);
-            $name = $_POST['name'] ?? '';
-            $language = $_POST['language'] ?? 'pt';
-            $messageTemplate = $_POST['message_template'] ?? '';
-            $scheduleStart = $_POST['schedule_start'] ?? null;
-            $sendMode = $_POST['send_mode'] ?? 'business_hours';
-            $delayMin = max(7, (int) ($_POST['delay_min'] ?? 7));
-            $delayMax = max($delayMin, (int) ($_POST['delay_max'] ?? 13));
-            
-            // Validações
-            if (empty($name)) {
-                ob_end_clean();
-                return json_encode([
-                    'status' => 'error',
-                    'message' => 'Nome da campanha é obrigatório'
-                ]);
-            }
-            
-            if (empty($messageTemplate)) {
-                ob_end_clean();
-                return json_encode([
-                    'status' => 'error',
-                    'message' => 'Mensagem da campanha é obrigatória'
-                ]);
-            }
-            
-            if ($delayMin < 7 || $delayMax > 60 || $delayMin > $delayMax) {
-                ob_end_clean();
-                return json_encode([
-                    'status' => 'error',
-                    'message' => 'Delays inválidos. Mínimo: 7s, Máximo: 60s'
-                ]);
-            }
-            
-            // Filtros
-            $filtersArr = [
-                'product_ids' => $_POST['product_ids'] ?? [],
-                'service_status' => $_POST['service_status'] ?? [],
-                'client_status' => $_POST['client_status'] ?? [],
-            ];
-            
-            // Calcula lote seguro: X = floor(T / Dmax) + 1
-            // T = 300s (5 min) - 20s (margem) = 280s
-            $T = 280;
-            $batchSize = floor($T / $delayMax) + 1;
-            
-            $totalContacts = $this->countCampaignRecipients($filtersArr);
-            
-            $data = [
-                'name' => $name,
-                'message_template' => $messageTemplate,
-                'language' => $language,
-                'filters' => json_encode($filtersArr),
-                'schedule_start' => $scheduleStart ? date('Y-m-d H:i:s', strtotime($scheduleStart)) : null,
-                'send_mode' => $sendMode,
-                'delay_min' => $delayMin,
-                'delay_max' => $delayMax,
-                'batch_size' => $batchSize,
-                'total_contacts' => $totalContacts,
-                'pending_count'  => $totalContacts,
-                'sent_count'     => 0,
-                'failed_count'   => 0,
-                'status' => 'draft',
-                'updated_at' => date('Y-m-d H:i:s'),
-            ];
-            
-            if ($campaignId > 0) {
-                
-                // Atualiza campanha existente
-                Capsule::table('mod_zapcel_campaigns')
-                    ->where('id', $campaignId)
-                    ->update($data);
-                    
-                $message = 'Campanha atualizada com sucesso!';
-                
-            } else {
-                
-                // Cria nova campanha
-                $data['created_at'] = date('Y-m-d H:i:s');
-                $data['sent_count'] = 0;
-                $data['failed_count'] = 0;
-                $data['total_contacts'] = 0;
-                
-                $campaignId = Capsule::table('mod_zapcel_campaigns')->insertGetId($data);
-                
-                $message = 'Campanha criada com sucesso!';
-            }
-            
-            // Enfileira destinatários
-            $this->enqueueCampaign($campaignId);
-            
-            return json_encode([
-                'success' => true,
-                'message' => $message // $this->LANG['campaign_saved']
-            ]);
-            
-        } catch (Exception $e) {
-            
-            return json_encode([
-                'success' => false,
-                'message' => $e->getMessage()
-            ]);
-        }
-    }
-    
-    // Contar destinatários (usado pra mostrar quantos vai enfileirar)
-    private function countCampaignRecipients(array $filters): int
-    {
-        $query = Capsule::table('tblhosting as h')
-            ->join('tblclients as c', 'h.userid', '=', 'c.id');
-    
-        if (!empty($filters['client_status'])) {
-            $query->whereIn('c.status', (array)$filters['client_status']);
-        }
-        if (!empty($filters['service_status'])) {
-            $query->whereIn('h.domainstatus', (array)$filters['service_status']);
-        }
-        if (!empty($filters['product_ids'])) {
-            $query->whereIn('h.packageid', (array)$filters['product_ids']);
-        }
-    
-        // conta quantos destinatários seriam enfileirados (um por serviço)
-        return (int)$query->count('h.id');
-    }
-
-    // Enfileirar destinatários (materializa e impede duplicidade)
-    private function enqueueCampaignRecipients(int $campaignId, array $filters): int
-    {
-        // limpa fila antiga
-        Capsule::table('mod_zapcel_campaign_queue')->where('campaign_id', $campaignId)->delete();
-    
-        $q = Capsule::table('tblclients as c')
-            ->join('tblhosting as h', 'h.userid', '=', 'c.id');
-    
-        if (!empty($filters['client_status'])) {
-            $q->whereIn('c.status', $filters['client_status']);
-        }
-        if (!empty($filters['service_status'])) {
-            $q->whereIn('h.domainstatus', $filters['service_status']);
-        }
-        if (!empty($filters['product_ids'])) {
-            $q->whereIn('h.packageid', $filters['product_ids']);
-        }
-    
-        // selecione o mínimo necessário
-        $rows = $q->select([
-            'c.id as client_id',
-            'h.id as service_id',
-            'c.phonenumber as phone'
-        ])->get();
-    
-        $now = date('Y-m-d H:i:s');
-        $inserted = 0;
-    
-        foreach ($rows as $r) {
-            $phone = trim((string)$r->phone);
-            if ($phone === '') continue;
-    
-            // insert ignorando duplicados (se você criar UNIQUE)
-            try {
-                Capsule::table('mod_zapcel_campaign_queue')->insertOrIgnore([
-                    'campaign_id'   => $campaignId,
-                    'client_id'     => (int)$r->client_id,
-                    'service_id'    => (int)$r->service_id,
-                    'phone_number'  => $phone,
-                    'message'       => '',
-                    'status'        => 'pending',
-                    'next_send_at'  => $now,
-                    'created_at'    => $now,
-                    'updated_at'    => $now,
-                ]);
-                $inserted++;
-            } catch (\Exception $e) {
-                // se for duplicado por UNIQUE, ignora
-            }
-        }
-    
-        return $inserted;
-    }
-
-    /**
-     * Reseta uma campanha (zera contadores e re-enfileira)
-     */
-    private function ajaxResetCampaign()
-    {
-        $campaignId = (int) ($_POST['campaign_id'] ?? 0);
-        if ($campaignId <= 0) {
-            return json_encode(['success' => false, 'error' => 'Campanha inválida']);
-        }
-    
-        $campaign = Capsule::table('mod_zapcel_campaigns')->find($campaignId);
-        if (!$campaign) {
-            return json_encode(['success' => false, 'error' => 'Campanha não encontrada']);
-        }
-    
-        $filters = json_decode($campaign->filters, true) ?: [];
-    
-        // recria fila
-        $this->enqueueCampaign($campaignId);
-        $total = (int) Capsule::table('mod_zapcel_campaign_queue')
-            ->where('campaign_id', $campaignId)
-            ->count();
-    
-        Capsule::table('mod_zapcel_campaigns')
-            ->where('id', $campaignId)
-            ->update([
-                'status'         => 'active',
-                'total_contacts' => $total,
-                'pending_count'  => $total,
-                'sent_count'     => 0,
-                'failed_count'   => 0,
-                'updated_at'     => date('Y-m-d H:i:s'),
-            ]);
-    
-        return json_encode([
-            'success' => true,
-            'message' => "Campanha resetada. $total contatos reenfileirados.",
-            'icon'    => 'success', // Altera para 'success'
-            'color'   => 'green'   // Cor verde para o aviso
-        ]);
-    }
-
-    /**
-     * Deleta uma campanha
-     */
-    private function ajaxDeleteCampaign()
-    {
-        try {
-            
-            $campaignId = (int)($_POST['campaign_id'] ?? 0);
-            if (!$campaignId) { return json_encode(['success' => false, 'error' => $this->LANG['invalid_id']]); }
-            
-            // Deleta campanha (CASCADE deleta fila automaticamente)
-            Capsule::table('mod_zapcel_campaigns')
-                ->where('id', $campaignId)->delete();
-            
-            return json_encode([
-                'success' => true,
-                'message' => $this->LANG['campaign_deleted']
-            ]);
-            
-        } catch (Exception $e) {
-            return json_encode([
-                'success' => false,
-                'message' => $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
-     * Gera relatório de atividade da campanha (TXT)
-     */
-    private function ajaxGetCampaignActivity()
-    {
-        try {
-            $campaignId = (int) ($_POST['campaign_id'] ?? 0);
-    
-            $campaign = Capsule::table('mod_zapcel_campaigns')->find($campaignId);
-            if (!$campaign) {
-                return json_encode([
-                    'status'  => 'error',
-                    'message' => 'Campanha não encontrada'
-                ]);
-            }
-    
-            // Filtros
-            $filters = json_decode($campaign->filters, true) ?: [];
-    
-            // Produtos
-            $productNames = [];
-            if (!empty($filters['product_ids'])) {
-                $productNames = Capsule::table('tblproducts')
-                    ->whereIn('id', (array)$filters['product_ids'])
-                    ->pluck('name')
-                    ->toArray();
-            }
-    
-            // Status mapeados
-            $statusMap = [
-                'Active'     => 'Ativo',
-                'Suspended'  => 'Suspenso',
-                'Terminated' => 'Encerrado',
-                'Cancelled'  => 'Cancelado',
-                'Inactive'   => 'Inativo',
-                'Closed'     => 'Fechado',
-            ];
-    
-            // Texto dos filtros
-            $filtrosTxt  = "- Serviço/Produto: " . (!empty($productNames) ? implode(', ', $productNames) : 'Todos') . "\n";
-            $filtrosTxt .= "- Status do Serviço: " . (!empty($filters['service_status'])
-                ? implode(', ', array_map(function ($s) use ($statusMap) { return $statusMap[$s] ?? $s; }, (array)$filters['service_status']))
-                : 'Todos') . "\n";
-            $filtrosTxt .= "- Status do Cliente: " . (!empty($filters['client_status'])
-                ? implode(', ', array_map(function ($s) use ($statusMap) { return $statusMap[$s] ?? $s; }, (array)$filters['client_status']))
-                : 'Todos') . "\n";
-    
-            $queue = Capsule::table('mod_zapcel_campaign_queue')
-                ->where('campaign_id', $campaignId)
-                ->whereIn('status', ['sent', 'failed'])
-                ->orderBy('sent_at')
-                ->get();
-    
-            // Datas BR
-            $periodo = $campaign->schedule_start
-                ? date('d/m/Y H:i:s', strtotime($campaign->schedule_start))
-                : 'Imediato';
-    
-            // Gera TXT
-            $content  = "==============================================\n";
-            $content .= "RELATÓRIO DE ATIVIDADE DA CAMPANHA\n";
-            $content .= "==============================================\n\n";
-            $content .= "Nome: " . $campaign->name . "\n\n";
-            $content .= "Filtros Aplicados:\n";
-            $content .= $filtrosTxt . "\n";
-            $content .= "Quantidade Total: " . (int)$campaign->total_contacts . "\n";
-            $content .= "Período: " . $periodo . "\n";
-            $content .= "Janela de Envio: " . ($campaign->send_mode === 'business_hours' ? '07:00 às 18:00' : '24h') . "\n";
-            $content .= "Delay Min/Max: " . (int)$campaign->delay_min . "s / " . (int)$campaign->delay_max . "s\n";
-            $content .= "\n==============================================\n";
-            $content .= "NÚMEROS PROCESSADOS\n";
-            $content .= "==============================================\n\n";
-    
-            foreach ($queue as $item) {
-                $status = ($item->status === 'sent') ? 'SUCESSO' : 'FALHA';
-                $delay  = isset($item->delay_used) ? (int)$item->delay_used : 'N/A';
-    
-                // telefone somente números (558199...)
-                $phone = preg_replace('/\D+/', '', (string)$item->phone_number);
-    
-                $dataEnvio = $item->sent_at
-                    ? date('d/m/Y H:i:s', strtotime($item->sent_at))
-                    : 'N/A';
-    
-                $content .= sprintf(
-                    "%s | %s | Delay: %s%s | %s\n",
-                    $phone,
-                    $status,
-                    $delay,
-                    ($delay === 'N/A' ? '' : 's'),
-                    $dataEnvio
-                );
-    
-                if ($item->status === 'failed' && !empty($item->error_message)) {
-                    $content .= "   Erro: " . $item->error_message . "\n";
-                }
-            }
-    
-            $filename = 'relatorio_campanha_' . $campaignId . '_' . date('YmdHis') . '.txt';
-    
-            return json_encode([
-                'status'   => 'success',
-                'content'  => $content,
-                'filename' => $filename
-            ]);
-    
-        } catch (Exception $e) {
-            return json_encode([
-                'status'  => 'error',
-                'message' => $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
-     * Enfileira destinatários de uma campanha
-     */
-    private function enqueueCampaign($campaignId)
-    {
-        $campaign = Capsule::table('mod_zapcel_campaigns')->find($campaignId);
-        if (!$campaign) return;
-    
-        $filters = json_decode($campaign->filters, true);
-        if (!is_array($filters)) $filters = [];
-    
-        $query = Capsule::table('tblhosting as h')
-            ->join('tblclients as c', 'h.userid', '=', 'c.id');
-    
-        // filtros
-        if (!empty($filters['client_status'])) {
-            $query->whereIn('c.status', (array)$filters['client_status']);
-        }
-        if (!empty($filters['service_status'])) {
-            $query->whereIn('h.domainstatus', (array)$filters['service_status']);
-        }
-        if (!empty($filters['product_ids'])) {
-            $query->whereIn('h.packageid', (array)$filters['product_ids']);
-        }
-    
-        // dados do contato (aliases usados no processMessageVariables)
-        $contacts = $query->select([
-            'c.id as client_id',
-            'h.id as service_id',
-            'c.firstname',
-            'c.lastname',
-            'c.email',
-            'c.phonenumber as phone',
-            'h.domain',
-        ])->get();
-    
-        // limpa fila anterior
-        Capsule::table('mod_zapcel_campaign_queue')
-            ->where('campaign_id', $campaignId)
-            ->delete();
-    
-        $nextSendAt = $campaign->schedule_start ? date('Y-m-d H:i:s', strtotime($campaign->schedule_start)) : date('Y-m-d H:i:s');
-    
-        $inserted = 0;
-    
-        foreach ($contacts as $contact) {
-            $phone = trim((string)($contact->phone ?? ''));
-            if ($phone === '') continue;
-    
-            $message = $this->processMessageVariables($campaign->message_template, $contact, $campaign->language);
-    
-            Capsule::table('mod_zapcel_campaign_queue')->insertOrIgnore([
-                'campaign_id'  => (int)$campaignId,
-                'client_id'    => (int)$contact->client_id,
-                'service_id'   => (int)$contact->service_id,
-                'phone_number' => $phone,
-                'message'      => (string)$message, // NOT NULL
-                'status'       => 'pending',
-                'next_send_at' => $nextSendAt,
-            ]);
-    
-            $inserted++;
-        }
-    
-        // atualiza contadores reais da fila
-        Capsule::table('mod_zapcel_campaigns')
-            ->where('id', $campaignId)
-            ->update([
-                'total_contacts' => $inserted,
-                'pending_count'  => $inserted,
-                'sent_count'     => 0,
-                'failed_count'   => 0,
-            ]);
-    }
-    
-    /**
-     * Processa variáveis na mensagem da campanha
-     */
-    private function processMessageVariables($template, $contact, $language)
-    {
-        $variables = [
-            '{cliente}' => $contact->firstname . ' ' . $contact->lastname,
-            '{email}' => $contact->email,
-            '{telefone}' => $contact->phone,
-            '{empresa}' => Capsule::table('tblconfiguration')->where('setting', 'CompanyName')->value('value') ?? '',
-            '{url_whmcs}' => Capsule::table('tblconfiguration')->where('setting', 'SystemURL')->value('value') ?? '',
-            '{assinatura}' => Capsule::table('tbladdonmodules')->where('module', 'zapcel')->where('setting', 'zapcel_signature')->value('value') ?? ''
-        ];
-        
-        return str_replace(array_keys($variables), array_values($variables), $template);
-    }
-    
-    /* FIM DAS FUNÇÕES DE CAMPANHA */
-    /**
-     * Testa conexão com a API
-     */
-    private function testAPIConnection()
-    {
-        try {
-            $settings = $this->getSettings();
-            
-            if (empty($settings['zapcel_instance_id']) || empty($settings['zapcel_access_token'])) {
-                return [
-                    'success' => false,
-                    'message' => $this->LANG['api_credentials_not_configured']
-                ];
-            }
-
-            $api = new WhatsAppAPI($settings);
-            $result = $api->checkInstanceStatus();
-
-            if ($result['success']) {
-                return [
-                    'success' => true,
-                    'message' => $this->LANG['connection_established'],
-                    'account_info' => $result['data'] ?? null
-                ];
-            } else {
-                return [
-                    'success' => false,
-                    'message' => $result['error'] ?? $this->LANG['connection_error'],
-                    'account_info' => null
-                ];
-            }
-
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'message' => $this->LANG['connection_error'] . ': ' . $e->getMessage()
-            ];
-        }
-    }
-
-    /**
-     * Obtém badge CSS para tipo de log - ATUALIZADO
-     */
-    private function getLogTypeBadge($type)
-    {
-        $badges = [
-            // FATURAS - Verde/Azul (Financeiro)
-            'invoice_created' => 'primary',      // Azul - Nova fatura
-            'invoice_paid' => 'success',         // Verde - Pagamento confirmado
-            'invoice_cancelled' => 'danger',     // Vermelho - Cancelamento
-            'invoice_reminder' => 'warning',     // Amarelo - Aviso geral
-            'invoice_reminder_1' => 'warning',   // Amarelo - 1º aviso
-            'invoice_reminder_2' => 'warning',   // Amarelo - 2º aviso  
-            'invoice_reminder_3' => 'danger',    // Vermelho - 3º aviso (urgente)
-
-            // SERVIÇOS - Roxo/Ciano (Infraestrutura)
-            'service_activated' => 'success',    // Verde - Ativação
-            'service_suspended' => 'warning',    // Amarelo - Suspensão
-            'service_unsuspended' => 'info',     // Ciano - Reativação
-            'service_terminated' => 'danger',    // Vermelho - Término
-            'cancellation_request' => 'warning', // Amarelo - Solicitação cancelamento
-
-            // TICKETS - Azul (Suporte)
-            'ticket_opened' => 'info',           // Ciano - Novo ticket
-            'ticket_reply' => 'primary',         // Azul - Resposta
-            'ticket_created' => 'info',          // Ciano - Compatibilidade
-            'ticket_replied' => 'primary',       // Azul - Compatibilidade
-
-            // CLIENTES - Roxo (Gestão)
-            'client_added' => 'primary',         // Azul - Novo cliente
-            'client_edited' => 'info',           // Ciano - Edição
-            'password_changed' => 'secondary',   // Cinza - Segurança
-
-            // COTAÇÕES - Verde (Vendas)
-            'quote_created' => 'success',        // Verde - Nova cotação
-            'quote_modified' => 'warning',       // Amarelo - Modificação
-            'quote_accepted' => 'success',       // Verde - Aceitação
-
-            // EMAIL - Cinza (Comunicação)
-            'email_presend' => 'secondary',      // Cinza - Pré-envio
-            'email_replaced' => 'light',         // Cinza claro - Substituição
-
-            // SISTEMA - Laranja/Cinza (Técnico)
-            'whatsapp_validation' => 'info',     // Ciano - Validação
-            'test_message' => 'secondary',       // Cinza - Teste
-            'system_error' => 'danger',          // Vermelho - Erro
-            'system_cleanup' => 'light',         // Cinza claro - Manutenção
-
-            // DEBUG - Cinza claro (Desenvolvimento)
-            'debug_aftermodulesuspend' => 'light',
-            'debug_aftermoduleunsuspend' => 'light', 
-            'debug_aftermoduleterminate' => 'light',
-            'debug_invoicecreated' => 'light',
-            'debug_ticketopened' => 'light',
-            'debug_default_variables' => 'light',
-            'debug_validationtest' => 'light'
-        ];
-
-        // Para tipos de debug genéricos
-        if (strpos($type, 'debug_') === 0) {
-            return 'light';
-        }
-
-        return $badges[$type] ?? 'secondary';
-    }
-
-    /**
-     * Obtém nome amigável para tipo de evento
-     */
-    private function getEventTypeDisplayName($eventType)
-    {
-        $names = [
-            // FATURAS
-            'invoice_created' => '📋 ' . $this->LANG['invoice_created'],
-            'invoice_reminder' => '🔔 ' . $this->LANG['invoice_reminder'],
-            'invoice_paid' => '✅ ' . $this->LANG['invoice_paid'],
-            'invoice_cancelled' => '❌ ' . $this->LANG['invoice_cancelled'],
-            'invoice_reminder_1' => '🔔 ' . $this->LANG['invoice_reminder_1'],
-            'invoice_reminder_2' => '🔔 ' . $this->LANG['invoice_reminder_2'],
-            'invoice_reminder_3' => '🔔 ' . $this->LANG['invoice_reminder_3'],
-            
-            // TICKETS
-            'ticket_created' => '🎫 ' . $this->LANG['ticket_created'],
-            'ticket_opened' => '🎫 ' . $this->LANG['ticket_opened'],
-            'ticket_replied' => '🎫 ' . $this->LANG['ticket_replied'],
-            'ticket_reply' => '🎫 ' . $this->LANG['ticket_reply'],
-            
-            // SERVIÇOS
-            'service_activated' => '✅ ' . $this->LANG['service_activated'],
-            'service_suspended' => '⏸️ ' . $this->LANG['service_suspended'],
-            'service_unsuspended' => '▶️ ' . $this->LANG['service_unsuspended'],
-            'service_terminated' => '🚫 ' . $this->LANG['service_terminated'],
-            'cancellation_request' => '📝 ' . $this->LANG['cancellation_request'],
-            
-            // CLIENTES
-            'client_added' => '👤 ' . $this->LANG['client_added'],
-            'client_edited' => '✏️ ' . $this->LANG['client_edited'],
-            'password_changed' => '🔑 ' . $this->LANG['password_changed'],
-            
-            // COTAÇÕES
-            'quote_created' => '💰 ' . $this->LANG['quote_created'],
-            'quote_modified' => '📝 ' . $this->LANG['quote_modified'],
-            'quote_accepted' => '✅ ' . $this->LANG['quote_accepted'],
-            
-            // EMAIL/SISTEMA
-            'email_presend' => '📧 ' . $this->LANG['email_presend'],
-            'email_replaced' => '📧 ' . $this->LANG['email_replaced'],
-            'whatsapp_validation' => '✅ ' . $this->LANG['whatsapp_validation'],
-            
-            // SISTEMA/DEBUG
-            'test_message' => '📋 ' . zapcel_trans('test_message_event'),
-            'custom_message_manual' => '📋 ' . zapcel_trans('custom_message_log'),
-            'system_error' => '⚠️ ' . zapcel_trans('system_error'),
-            'system_cleanup' => '🧹 ' . zapcel_trans('system_cleanup_log'),
-            'debug_aftermodulesuspend' => '⏸️ ' . zapcel_trans('debug_service_suspended'),
-            'debug_aftermoduleunsuspend' => '▶️ ' . zapcel_trans('debug_service_unsuspended'),
-            'debug_aftermoduleterminate' => '🚫 ' . zapcel_trans('debug_service_terminated'),
-            'debug_invoicecreated' => '📋 ' . zapcel_trans('debug_invoice_created'),
-            'debug_ticketopened' => '🎫 ' . zapcel_trans('debug_ticket_opened'),
-            'debug_default_variables' => '🔧 ' . zapcel_trans('debug_default_variables'),
-            'debug_validationtest' => '🧪 ' . zapcel_trans('debug_validation_test'),
-            
-            // SERVIÇOS POR TIPO
-            'service_activated_hosting' => '🌐 ' . zapcel_trans('hosting'),
-            'service_activated_other' => '🌐 ' . zapcel_trans('other_services'),
-            'service_activated_reseller' => '📋 ' . zapcel_trans('reseller'),
-            'service_activated_vps' => '☁️ ' . zapcel_trans('dedicated_vps_server'),
-            
-            // Campanhas
-            'campaign_start' => '▶️ ' . zapcel_trans('campaign_start_log'),
-            'campaign_end' => '✅ ' . zapcel_trans('campaign_end_log'),
-        ];
-
-        return $names[$eventType] ?? ($this->LANG[$eventType] ?? $eventType);
-    }
-
-    /**
-     * Obtém nome amigável para tipo de log
-     */
-    private function getLogTypeLabel($type)
-    {
-        $map = [
-            'message_sent' => $this->LANG['message_sent'],
-            'message_failed' => $this->LANG['message_failed'],
-            'validation_sent' => $this->LANG['validation_sent'],
-            'validation_success' => $this->LANG['validation_success'],
-            'gateway_sync' => $this->LANG['gateway_sync'],
-            'system_error' => $this->LANG['system_error']
-        ];
-
-        if (isset($map[$type])) {
-            return $map[$type];
-        }
-
-        // genérico para qualquer gateway_* (sem nome do gateway)
-        if (strpos($type, 'gateway_') === 0) {
-            return $this->LANG['gateway_event'];
-        }
-
-        return $type; // fallback
-    }
-
-    // ===================== MÉTODOS AJAX (IMPLEMENTADOS) =====================
-
-    private function ajaxDeactivateTemplate() {
-        try {
-            $id = (int)($_POST['template_id'] ?? 0);
-            if (!$id) { return json_encode(['success' => false, 'error' => 'ID inválido']); }
-
-            $tpl = Capsule::table('mod_zapcel_templates')->where('id', $id)->first();
-            if (!$tpl) { return json_encode(['success' => false, 'error' => 'Template não encontrado']); }
-
-            // APENAS DESATIVA (sempre coloca como 0)
-            Capsule::table('mod_zapcel_templates')->where('id', $id)->update(['active' => 0, 'updated_at' => date('Y-m-d H:i:s')]);
-            return json_encode(['success' => true, 'active' => false]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxActivateTemplate() {
-        try {
-            $id = (int)($_POST['template_id'] ?? 0);
-            if (!$id) { return json_encode(['success' => false, 'error' => 'ID inválido']); }
-
-            $tpl = Capsule::table('mod_zapcel_templates')->where('id', $id)->first();
-            if (!$tpl) { return json_encode(['success' => false, 'error' => 'Template não encontrado']); }
-
-            // APENAS ATIVA (sempre coloca como 1)
-            Capsule::table('mod_zapcel_templates')->where('id', $id)->update(['active' => 1, 'updated_at' => date('Y-m-d H:i:s')]);
-            return json_encode(['success' => true, 'active' => true]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxDeleteTemplate() {
-        try {
-            $id = (int)($_POST['template_id'] ?? 0);
-            if (!$id) { return json_encode(['success' => false, 'error' => $this->LANG['invalid_id']]); }
-            
-            Capsule::table('mod_zapcel_templates')->where('id', $id)->delete();
-            return json_encode(['success' => true, 'message' => $this->LANG['template_deleted']]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxCreateTemplate() {
-        try {
-            $name = trim($_POST['name'] ?? '');
-            $trigger = trim($_POST['trigger_event'] ?? '');
-            $content = trim($_POST['template'] ?? '');
-            $active = (int)($_POST['active'] ?? 0);
-            if ($name === '' || $trigger === '' || $content === '') {
-                return json_encode(['success' => false, 'error' => $this->LANG['fill_name_event_content']]);
-            }
-
-            $templateId = Capsule::table('mod_zapcel_templates')->insertGetId([
-                'name' => $name,
-                'trigger_event' => $trigger,
-                'template' => $content,
-                'active' => $active,
-                'usage_count' => 0,
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s')
-            ]);
-            return json_encode(['success' => true, 'message' => $this->LANG['template_created'], 'template_id' => $templateId]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxResendValidation() {
-        try {
-            $clientId = (int)($_POST['client_id'] ?? 0);
-            if (!$clientId) { return json_encode(['success' => false, 'error' => $this->LANG['invalid_client']]); }
-            $settings = $this->getSettings();
-            $nv = new \WHMCS\Module\Addon\Zapcel\Api\NumberValidator($settings);
-            $r = $nv->resendCode($clientId);
-            return json_encode($r);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxGetValidationDetails() {
-        try {
-            $clientId = (int)($_POST['client_id'] ?? 0);
-            if (!$clientId) { return json_encode(['success' => false, 'error' => $this->LANG['invalid_client']]); }
-            $v = Capsule::table('mod_zapcel_validation')->where('client_id', $clientId)->first();
-            if (!$v) { return json_encode(['success' => false, 'error' => $this->LANG['validation_not_found']]); }
-
-            $statusBadge = '';
-            switch ($v->status) {
-                case 'validated':
-                    $statusBadge = '<span class="badge badge-success">' . $this->LANG['validated'] . '</span>';
-                    break;
-                case 'pending':
-                    $statusBadge = '<span class="badge badge-warning">' . $this->LANG['pending'] . '</span>';
-                    break;
-                case 'blocked':
-                    $statusBadge = '<span class="badge badge-danger">' . $this->LANG['blocked'] . '</span>';
-                    break;
-                case 'expired':
-                    $statusBadge = '<span class="badge badge-secondary">' . $this->LANG['expired'] . '</span>';
-                    break;
-            }
-
-            $html = '
-            <table class="table table-bordered">
-                <tbody>
-                    <tr>
-                        <td><strong>' . $this->LANG['status'] . '</strong></td>
-                        <td>' . $statusBadge . '</td>
-                    </tr>
-                    <tr>
-                        <td><strong>' . $this->LANG['phone'] . '</strong></td>
-                        <td>' . htmlspecialchars($v->phone_number) . '</td>
-                    </tr>
-                    <tr>
-                        <td><strong>' . $this->LANG['attempts'] . '</strong></td>
-                        <td>' . (int)$v->attempts. '</td>
-                    </tr>
-                    <tr>
-                        <td><strong>' . $this->LANG['updated_at'] . '</strong></td>
-                        <td>' .  date('d/m/Y H:i', strtotime($v->updated_at)) . '</td>
-                    </tr>
-                </tbody>
-            </table>';
-
-            return json_encode(['success' => true, 'html' => $html]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxResetValidation() {
-        try {
-            $clientId = (int)($_POST['client_id'] ?? 0);
-            if (!$clientId) { return json_encode(['success' => false, 'error' => $this->LANG['invalid_client']]); }
-            $settings = $this->getSettings();
-            $nv = new \WHMCS\Module\Addon\Zapcel\Api\NumberValidator($settings);
-            $r = $nv->resetValidation($clientId);
-            return json_encode($r);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxSendPendingValidations() {
-        try {
-            $settings = $this->getSettings();
-            $nv = new \WHMCS\Module\Addon\Zapcel\Api\NumberValidator($settings);
-            $r = $nv->sendPendingValidations(50);
-            if (!empty($r['success'])) {
-                return json_encode(['success' => true, 'message' => $this->LANG['processed'] . ': '.$r['results']['total'].' ' . $this->LANG['pending']]);
-            }
-            return json_encode(['success' => false, 'error' => $r['error'] ?? $this->LANG['failure']]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxInstallGateway() {
-        try {
-            $gatewayId = trim($_POST['gateway_id'] ?? '');
-            if ($gatewayId === '') { return json_encode(['success' => false, 'error' => $this->LANG['invalid_gateway']]); }
-
-            $exists = Capsule::table('mod_zapcel_gateways')->where('gateway_id', $gatewayId)->first();
-            if ($exists) {
-                return json_encode(['success' => true, 'message' => $this->LANG['already_installed']]);
-            }
-
-            Capsule::table('mod_zapcel_gateways')->insert([
-                'gateway_id' => $gatewayId,
-                'name' => ucfirst(str_replace('_',' ',$gatewayId)),
-                'config' => json_encode([]),
-                'active' => 0,
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s')
-            ]);
-
-            return json_encode(['success' => true, 'message' => $this->LANG['gateway_installed']]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxToggleGateway() {
-        try {
-            $id = (int)($_POST['gateway_id'] ?? 0);
-            $action = $_POST['action'] ?? '';
-            if (!$id || !in_array($action, ['enable','disable'], true)) {
-                return json_encode(['success' => false, 'error' => $this->LANG['invalid_parameters']]);
-            }
-            $active = $action === 'enable' ? 1 : 0;
-            Capsule::table('mod_zapcel_gateways')->where('id', $id)->update(['active' => $active, 'updated_at' => date('Y-m-d H:i:s')]);
-            return json_encode(['success' => true, 'active' => (bool)$active]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxRemoveGateway() {
-        try {
-            $id = (int)($_POST['gateway_id'] ?? 0);
-            if (!$id) { return json_encode(['success' => false, 'error' => $this->LANG['invalid_id']]); }
-            Capsule::table('mod_zapcel_gateways')->where('id', $id)->delete();
-            return json_encode(['success' => true, 'message' => $this->LANG['gateway_removed']]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxGetLogDetails() {
-    try {
-        $id = (int)($_POST['log_id'] ?? 0);
-        if (!$id) { 
-            return json_encode(['success' => false, 'error' => $this->LANG['invalid_id']]); 
-        }
-        
-        $log = Capsule::table('mod_zapcel_logs as l')
-            ->leftJoin('tblclients as c', 'l.client_id', '=', 'c.id')
-            ->select('l.*', 'c.firstname', 'c.lastname', 'c.email', 'c.phonenumber')
-            ->where('l.id', $id)
-            ->first();
-            
-        if (!$log) { 
-            return json_encode(['success' => false, 'error' => $this->LANG['log_not_found']]); 
-        }
-
-        $html = '<div class="row">';
-        
-        // Informações básicas
-        $html .= '<div class="col-md-6">';
-        $html .= '<h6>' . $this->LANG['basic_information'] . '</h6>';
-        $html .= '<table class="table table-sm table-borderless">';
-        $html .= '<tr><td width="40%"><strong>' . $this->LANG['date_time'] . ':</strong></td><td>' . date('d/m/Y H:i:s', strtotime($log->created_at)) . '</td></tr>';
-        $html .= '<tr><td><strong>' . $this->LANG['event_type'] . ':</strong></td><td><span class="badge bg-' . $this->getLogTypeBadge($log->event_type) . '">' . $this->getEventTypeDisplayName($log->event_type) . '</span></td></tr>';
-        $html .= '<tr><td><strong>' . $this->LANG['status'] . ':</strong></td><td>' . ($log->success ? '<span class="badge bg-success">' . $this->LANG['success'] . '</span>' : '<span class="badge bg-danger">' . $this->LANG['error'] . '</span>') . '</td></tr>';
-        
-        if ($log->client_id) {
-            $html .= '<tr><td><strong>' . $this->LANG['client'] . ':</strong></td><td>';
-            $html .= '<a href="clientssummary.php?userid=' . $log->client_id . '" target="_blank">';
-            $html .= '#' . $log->client_id . ' - ' . htmlspecialchars($log->firstname . ' ' . $log->lastname);
-            $html .= '</a></td></tr>';
-            $html .= '<tr><td><strong>' . $this->LANG['phone'] . ':</strong></td><td>' . htmlspecialchars($log->phone_number) . '</td></tr>';
-        }
-        
-        $html .= '</table>';
-        $html .= '</div>';
-        
-        // Mensagem
-        $html .= '<div class="col-md-12 mt-3">';
-        $html .= '<h6>' . $this->LANG['message'] . '</h6>';
-        $html .= '<div class="border rounded p-3 bg-light">';
-        $html .= '<pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">' . htmlspecialchars($log->message) . '</pre>';
-        $html .= '</div>';
-        $html .= '</div>';
-        
-        // Resposta da API
-        if ($log->response) {
-            $html .= '<div class="col-md-12 mt-3">';
-            $html .= '<h6>' . $this->LANG['api_response'] . '</h6>';
-            $html .= '<div class="border rounded p-3">';
-            
-            $responseData = json_decode($log->response, true);
-            if (json_last_error() === JSON_ERROR_NONE && is_array($responseData)) {
-                $html .= '<pre style="white-space: pre-wrap; font-size: 12px; margin: 0;">' . htmlspecialchars(json_encode($responseData, JSON_PRETTY_PRINT)) . '</pre>';
-            } else {
-                $html .= '<pre style="white-space: pre-wrap; margin: 0;">' . htmlspecialchars($log->response) . '</pre>';
-            }
-            
-            $html .= '</div>';
-            $html .= '</div>';
-        }
-        
-        $html .= '</div>';
-
-        return json_encode(['success' => true, 'html' => $html]);
-    } catch (\Throwable $e) {
-        return json_encode(['success' => false, 'error' => $e->getMessage()]);
-    }
-}
-
-    private function ajaxDeleteLog() {
-        try {
-            $id = (int)($_POST['log_id'] ?? 0);
-            if (!$id) { return json_encode(['success' => false, 'error' => $this->LANG['invalid_id']]); }
-            Capsule::table('mod_zapcel_logs')->where('id', $id)->delete();
-            return json_encode(['success' => true, 'message' => $this->LANG['log_deleted']]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxClearLogs() {
-        try {
-            Capsule::table('mod_zapcel_logs')->truncate();
-            return json_encode(['success' => true, 'message' => $this->LANG['logs_cleared']]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxSaveSettings() {
-        try {
-            // Remove subaction do POST
-            $data = $_POST;
-            unset($data['subaction']);
-
-            // === CORREÇÃO URGENTE: REMOVE CAMPOS AUTOMÁTICOS DO WHMCS ===
-            foreach ($data as $key => $value) {
-                if (strpos($key, 'country-calling-code-') === 0) {
-                    unset($data[$key]);
-                }
-            }
-            // === FIM DA CORREÇÃO ===
-            
-            if (!$data) { 
-                return json_encode(['success' => false, 'error' => $this->LANG['invalid_data']]); 
-            }
-            
-            // Lista de campos que são checkboxes (devem ser tratados explicitamente)
-            $checkboxFields = [
-                'require_validation',
-                'enable_logging',
-                'zapcel_floating_button',
-                'zapcel_hide_mobile',
-                'zapcel_validation'
-            ];
-            
-            // Para cada campo checkbox, se não foi enviado, define como 0
-            foreach ($checkboxFields as $checkboxField) {
-                if (!isset($data[$checkboxField])) {
-                    $data[$checkboxField] = '0';
-                }
-            }
-            
-            // Validações e padrões para campos específicos
-            $validations = [
-                'status' => ['default' => 'active', 'options' => ['active', 'inactive']],
-                'message_delay' => ['default' => '2', 'min' => 1, 'max' => 10],
-                'max_attempts' => ['default' => '3', 'min' => 1, 'max' => 5],
-                'language' => ['default' => 'portuguese', 'options' => ['portuguese', 'english']],
-                'log_retention_days' => ['default' => '30', 'min' => 1, 'max' => 365],
-                'validation_template' => ['default' => '']
-            ];
-            
-            // Aplica validações e padrões
-            foreach ($validations as $field => $rules) {
-                if (isset($data[$field])) {
-                    // Para campos com opções fixas
-                    if (isset($rules['options']) && !in_array($data[$field], $rules['options'])) {
-                        $data[$field] = $rules['default'];
-                    }
-                    
-                    // Para campos numéricos
-                    if (isset($rules['min']) && isset($rules['max'])) {
-                        $value = intval($data[$field]);
-                        if ($value < $rules['min'] || $value > $rules['max']) {
-                            $data[$field] = $rules['default'];
-                        } else {
-                            $data[$field] = (string)$value;
-                        }
-                    }
-                } else {
-                    // Se campo não foi enviado, usa valor padrão
-                    $data[$field] = $rules['default'];
-                }
-            }
-
-            // Para o campo zapcel_company_phone_full, mantenha o valor exato que o usuário digitou
-            if (isset($data['zapcel_company_phone_full'])) {
-                // Remove TODOS os caracteres não numéricos para salvar apenas números
-                $data['zapcel_company_phone_full'] = preg_replace('/[^\d]/', '', trim($data['zapcel_company_phone_full']));
-            } else {
-                $data['zapcel_company_phone_full'] = '';
-            }
-            
-            // Salva todos os campos no banco de dados
-            $savedFields = [];
-            foreach ($data as $key => $value) {
-                // Remove espaços em branco do início e fim
-                $value = trim($value);
-                
-                Capsule::table('tbladdonmodules')->updateOrInsert(
-                    ['module' => 'zapcel', 'setting' => $key],
-                    ['value' => $value]
-                );
-                
-                $savedFields[] = $key;
-            }
-            
-            // Log para debug (opcional)
-            /*Capsule::table('mod_zapcel_logs')->insert([
-                'event_type' => 'settings_saved',
-                'message' => 'Configurações salvas: ' . implode(', ', $savedFields),
-                'success' => 1,
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s'),
-            ]);*/
-            
-            return json_encode([
-                'success' => true, 
-                'message' => $this->LANG['settings_saved'],
-                'saved_fields' => $savedFields // Para debug
-            ]);
-            
-        } catch (\Throwable $e) {
-            // Log do erro
-            Capsule::table('mod_zapcel_logs')->insert([
-                'event_type' => 'settings_error',
-                'message' => 'Erro ao salvar configurações: ' . $e->getMessage(),
-                'success' => 0,
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s'),
-            ]);
-            
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxTestConnection()
-    {
-        try {
-
-            // Se o objeto não foi carregado (é null), carregamos manualmente:
-            if ($this->whatsappAPI === null) {
-                $this->whatsappAPI = new WhatsAppAPI($this->getSettings());
-            }
-
-            // Agora SIM o objeto existe e podemos chamar:
-            $result = $this->whatsappAPI->checkInstanceStatus();
-
-            return json_encode($result);
-
-        } catch (\Throwable $e) {
-            return json_encode([
-                'success' => false,
-                'error' => 'Erro interno: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ]);
-        }
-    }
-
-    private function ajaxClearCache() {
-        try {
-            $this->statsManager->clearCache();
-            return json_encode(['success' => true, 'message' => $this->LANG['cache_cleared']]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxSyncTemplates() {
-        try {
-            // stub: apenas informa sucesso
-            return json_encode(['success' => true, 'message' => $this->LANG['templates_synced']]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-    private function ajaxSendTestMessage() {
-        try {
-            $clientId = (int)($_POST['client_id'] ?? 0);
-            $simulate = !empty($_POST['simulate_only']);
-            $message = trim($_POST['custom_message'] ?? '');
-
-            if (!$clientId) { return json_encode(['success' => false, 'error' => $this->LANG['invalid_client']]); }
-            if ($message === '') { return json_encode(['success' => false, 'error' => $this->LANG['empty_message']]); }
-
-            // Carrega cliente
-            $client = Capsule::table('tblclients')->where('id', $clientId)->first();
-            if (!$client) { return json_encode(['success' => false, 'error' => $this->LANG['client_not_found']]); }
-
-            // Substituição apenas de variáveis básicas
-            $clientName = trim($client->firstname . ' ' . $client->lastname);
-            $companyName = Capsule::table('tblconfiguration')->where('setting', 'CompanyName')->value('value') ?: $this->LANG['our_provider'];
-            
-            $msg = str_replace(['{cliente}', '{provedor}'], [$clientName, $companyName], $message);
-
-            // Número de destino
-            $phoneNumber = preg_replace('/\D+/', '', (string)$client->phonenumber);
-            
-            // Se o número tem 10 ou 11 dígitos (DDD + telefone), adiciona +55
-            // Se tem 12 ou 13 dígitos, já tem o 55, só adiciona o +
-            if (strlen($phoneNumber) == 10 || strlen($phoneNumber) == 11) {
-                $to = '+55' . $phoneNumber;
-            } else {
-                $to = '+' . $phoneNumber;
-            }
-
-            // Monta HTML de resposta
-            $html  = '<div class="alert alert-info">';
-            $html .= '<h5><i class="fas fa-eye"></i> ' . $this->LANG['message_preview_title'] . '</h5>';
-            $html .= '<div style="background: white; padding: 15px; border-radius: 5px; margin-top: 10px;">';
-            $html .= nl2br(htmlspecialchars($msg));
-            $html .= '</div></div>';
-            
-            $html .= '<div class="alert alert-secondary">';
-            $html .= '<strong>' . $this->LANG['recipient'] . ':</strong> ' . htmlspecialchars($clientName) . ' (' . htmlspecialchars($to) . ')';
-            $html .= '</div>';
-            
-            if (!$simulate) {
-                // Inicializa WhatsAppAPI se necessário
-                if (!$this->whatsappAPI) {
-                    $this->whatsappAPI = new WhatsAppAPI($this->getSettings());
-                }
-                $send = $this->whatsappAPI->sendMessage($to, $msg, ['type' => 'test', 'client_id' => $clientId]);
-                
-                // Registra log do envio
-                Capsule::table('mod_zapcel_logs')->insert([
-                    'client_id' => $clientId,
-                    'event_type' => 'test_message',
-                    'phone_number' => $to,
-                    'message' => $msg,
-                    'success' => !empty($send['success']) ? 1 : 0,
-                    'response' => json_encode($send),
-                    'created_at' => date('Y-m-d H:i:s'),
-                    'updated_at' => date('Y-m-d H:i:s'),
-                ]);
-                
-                if (empty($send['success'])) {
-                    return json_encode(['success' => false, 'error' => $send['error'] ?? $this->LANG['send_failure']]);
-                }
-
-                $adminName = $_SESSION['adminid'] ? Capsule::table('tbladmins')->where('id', $_SESSION['adminid'])->value('username') : 'Unknown';
-                logActivity("Zapcel: " . $this->LANG['test_message_sent_by_admin'] . " ({$adminName}) para {$clientName}");
-
-                $html .= '<div class="alert alert-success"><i class="fas fa-check-circle"></i> <strong>' . $this->LANG['message_sent_successfully'] . '</strong></div>';
-            } else {
-                // Registra log da simulação
-                Capsule::table('mod_zapcel_logs')->insert([
-                    'client_id' => $clientId,
-                    'event_type' => 'test_message_simulation',
-                    'phone_number' => $to,
-                    'message' => $msg,
-                    'success' => 1,
-                    'response' => json_encode(['simulated' => true]),
-                    'created_at' => date('Y-m-d H:i:s'),
-                    'updated_at' => date('Y-m-d H:i:s'),
-                ]);
-                $html .= '<div class="alert alert-warning"><i class="fas fa-info-circle"></i> <strong>' . $this->LANG['simulation_mode'] . '</strong></div>';
-            }
-
-            return json_encode(['success' => true, 'html' => $html]);
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-    
-    /**
-     * Envia lembrete de fatura via WhatsApp
-     */
-    private function ajaxSendInvoiceReminder()
-    {
-        try {
-            $invoiceId = (int)($_POST['invoice_id'] ?? 0);
-            
-            if (!$invoiceId) {
-                return json_encode(['success' => false, 'error' => $this->LANG['invoice_id_not_provided']]);
-            }
-            
-            // Busca dados da fatura
-            $invoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->first();
-            if (!$invoice) {
-                return json_encode(['success' => false, 'error' => $this->LANG['invoice_not_found']]);
-            }
-            
-            $clientId = $invoice->userid;
-            
-            // Busca cliente
-            $client = Capsule::table('tblclients')->where('id', $clientId)->first();
-            if (!$client) {
-                return json_encode(['success' => false, 'error' => $this->LANG['client_not_found']]);
-            }
-            
-            // Busca template de lembrete de fatura
-            $template = Capsule::table('mod_zapcel_templates')
-                ->where('trigger_event', 'invoice_reminder')
-                ->where('active', true)
-                ->first();
-                
-            if (!$template) {
-                return json_encode(['success' => false, 'error' => $this->LANG['reminder_template_not_found']]);
-            }
-            
-            // Obtém configurações
-            $settings = $this->getSettings();
-            
-            // Obtém número do cliente
-            $phoneNumber = $client->phonenumber;
-            if (!$phoneNumber) {
-                return json_encode(['success' => false, 'error' => $this->LANG['client_no_phone']]);
-            }
-            
-            // Formata número
-            $phoneNumber = preg_replace('/\D+/', '', $phoneNumber);
-            $len = strlen($phoneNumber);
-            if ($len == 10 || $len == 11) {
-                $phoneNumber = '+55' . $phoneNumber;
-            } elseif ($len == 12 || $len == 13) {
-                $phoneNumber = '+' . $phoneNumber;
-            }
-            
-            // Busca dados de pagamento (PIX/Boleto)
-            $invoiceData = localAPI('GetInvoice', ['invoiceid' => $invoiceId]);
-            $codigoPix = '';
-            $linhaDigitavel = '';
-            $qrcodeUrl = '';
-            
-            if ($invoiceData['result'] == 'success') {
-                // Tenta buscar PIX
-                $pixData = Capsule::table('tblaccounts')
-                    ->where('invoiceid', $invoiceId)
-                    ->where('gateway', 'LIKE', '%pix%')
-                    ->first();
-                    
-                if ($pixData && !empty($pixData->description)) {
-                    // Extrai código PIX da descrição
-                    if (preg_match('/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Z0-9]{32,})/i', $pixData->description, $matches)) {
-                        $codigoPix = $matches[1];
-                    }
-                }
-                
-                // Tenta buscar boleto
-                $boletoData = Capsule::table('mod_boleto')
-                    ->where('invoice_id', $invoiceId)
-                    ->first();
-                    
-                if ($boletoData && !empty($boletoData->linha_digitavel)) {
-                    $linhaDigitavel = $boletoData->linha_digitavel;
-                }
-            }
-            
-            // Monta variáveis
-            $variables = [
-                'cliente' => trim($client->firstname . ' ' . $client->lastname),
-                'numero_fatura' => $invoice->invoicenum,
-                'valor' => 'R$ ' . number_format($invoice->total, 2, ',', '.'),
-                'vencimento' => date('d/m/Y', strtotime($invoice->duedate)),
-                'descricao' => $invoiceData['items'][0]['description'] ?? 'Fatura',
-                'codigopix' => $codigoPix,
-                'linhadigitavel' => $linhaDigitavel,
-                'link_fatura' => $settings['zapcel_client_area_url'] . '/viewinvoice.php?id=' . $invoiceId,
-                'assinatura' => $settings['zapcel_signature'],
-                'provedor' => $settings['zapcel_company_name'],
-                'quebrar_mensagem' => "\n\n" // Quebra de mensagem
-            ];
-            
-            // Processa template
-            require_once __DIR__ . '/../api/MessageProcessor.php';
-            $processor = new MessageProcessor($settings);
-            $message = $processor->processTemplate($template->template, $variables);
-            
-            // Envia mensagem
-            require_once __DIR__ . '/../api/WhatsAppAPI.php';
-            $api = new WhatsAppAPI($settings);
-            $result = $api->sendMessage($phoneNumber, $message);
-            
-            // Registra log
-            Capsule::table('mod_zapcel_logs')->insert([
-                'client_id' => $clientId,
-                'event_type' => 'invoice_reminder_manual',
-                'phone_number' => $phoneNumber,
-                'message' => $message,
-                'success' => $result['success'] ? 1 : 0,
-                'response' => json_encode($result),
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s'),
-            ]);
-            
-            if ($result['success']) {
-                return json_encode([
-                    'success' => true,
-                    'message' => $this->LANG['reminder_sent_success'] . ' ' . $client->firstname . ' (' . $phoneNumber . ')'
-                ]);
-            } else {
-                return json_encode([
-                    'success' => false,
-                    'error' => $result['error'] ?? $this->LANG['send_failure']
-                ]);
-            }
-            
-        } catch (\Throwable $e) {
-            return json_encode(['success' => false, 'error' => $e->getMessage()]);
-        }
-    }
-
-}
-
-// Fim da classe AdminDispatcher
-// O dispatcher é instanciado e executado pela função zapcel_output() no arquivo zapcel.php 4719
+<?php //00507
+// 14.0 82
+if(!extension_loaded('ionCube Loader')){$__oc=strtolower(substr(php_uname(),0,3));$__ln='ioncube_loader_'.$__oc.'_'.substr(phpversion(),0,3).(($__oc=='win')?'.dll':'.so');if(function_exists('dl')){@dl($__ln);}if(function_exists('_il_exec')){return _il_exec();}$__ln='/ioncube/'.$__ln;$__oid=$__id=realpath(ini_get('extension_dir'));$__here=dirname(__FILE__);if(strlen($__id)>1&&$__id[1]==':'){$__id=str_replace('\\','/',substr($__id,2));$__here=str_replace('\\','/',substr($__here,2));}$__rd=str_repeat('/..',substr_count($__id,'/')).$__here.'/';$__i=strlen($__rd);while($__i--){if($__rd[$__i]=='/'){$__lp=substr($__rd,0,$__i).$__ln;if(file_exists($__oid.$__lp)){$__ln=$__lp;break;}}}if(function_exists('dl')){@dl($__ln);}}else{die('The file '.__FILE__." is corrupted.\n");}if(function_exists('_il_exec')){return _il_exec();}echo("Site error: the ".(php_sapi_name()=='cli'?'ionCube':'<a href="http://www.ioncube.com">ionCube</a>')." PHP Loader needs to be installed. This is a widely used PHP extension for running ionCube protected PHP code, website security and malware blocking.\n\nPlease visit ".(php_sapi_name()=='cli'?'get-loader.ioncube.com':'<a href="http://get-loader.ioncube.com">get-loader.ioncube.com</a>')." for install assistance.\n\n");exit(199);
+
+?>
+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

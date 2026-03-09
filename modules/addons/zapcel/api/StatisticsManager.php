@@ -1,709 +1,428 @@
-<?php
-namespace WHMCS\Module\Addon\Zapcel\Api;
-
-/**
- * Zapcel WHMCS - Gerenciador de Estatísticas e Relatórios
- * Sistema especializado em métricas e analytics
- * 
- * @package    Zapcel
- * @author     Hostcel
- * @version    2.1.1
- */
-
-// Bloqueia acesso direto
-if (!defined('WHMCS')) {
-    die('Acesso não autorizado.');
-}
-
-use WHMCS\Database\Capsule;
-
-/**
- * Classe especializada em estatísticas e relatórios
- */
-class StatisticsManager
-{
-    /**
-     * @var array Cache de estatísticas
-     */
-    private $cache = [];
-    
-    /**
-     * @var int Tempo de vida do cache em segundos
-     */
-    private $cacheTtl = 300; // 5 minutos
-
-    /**
-     * @var NumberValidator Instância do validador (para evitar duplicação)
-     */
-    private $numberValidator;
-
-    public function __construct()
-    {
-        // Instancia o NumberValidator para usar seus métodos específicos
-        $this->numberValidator = new NumberValidator([]);
-    }
-
-    /**
-     * Obtém estatísticas gerais do módulo (SEM DUPLICAÇÃO)
-     */
-    public function getGeneralStatistics(): array
-    {
-        $cacheKey = 'general_stats';
-        if ($this->isCacheValid($cacheKey)) {
-            return $this->cache[$cacheKey];
-        }
-
-        try {
-            // Usa métodos específicos de validação do NumberValidator
-            $validationStats = $this->numberValidator->getValidationStatistics();
-            
-            $stats = [
-                'total_messages' => $this->getTotalMessagesCount(),
-                'successful_messages' => $this->getSuccessfulMessagesCount(),
-                'failed_messages' => $this->getFailedMessagesCount(),
-                'success_rate' => $this->getSuccessRate(),
-                'total_templates' => $this->getTemplatesCount(),
-                'active_templates' => $this->getActiveTemplatesCount(),
-                'today_messages' => $this->getTodayMessagesCount(),
-                'month_messages' => $this->getMonthMessagesCount(),
-                'most_used_template' => $this->getMostUsedTemplate(),
-                'most_active_client' => $this->getMostActiveClient(),
-                // Dados de validação vindos do NumberValidator
-                'validated_clients' => $validationStats['statistics']['validated'] ?? 0,
-                'validation_rate' => $validationStats['statistics']['validation_rate'] ?? 0,
-            ];
-
-            $this->cache[$cacheKey] = $stats;
-            $this->updateCacheTimestamp($cacheKey);
-
-            return $stats;
-
-        } catch (\Exception $e) {
-            error_log("Zapcel Statistics Error: " . $e->getMessage());
-            return $this->getFallbackStatistics();
-        }
-    }
-
-    /**
-     * Obtém estatísticas diárias detalhadas
-     */
-    public function getDailyStatistics(int $days = 30): array
-    {
-        $cacheKey = "daily_stats_{$days}";
-        if ($this->isCacheValid($cacheKey)) {
-            return $this->cache[$cacheKey];
-        }
-
-        try {
-            $startDate = date('Y-m-d', strtotime("-{$days} days"));
-            
-            $dailyStats = Capsule::table('mod_zapcel_logs')
-                ->selectRaw('
-                    DATE(created_at) as date,
-                    COUNT(*) as total_messages,
-                    SUM(status = "success") as successful_messages,
-                    SUM(status = "error") as failed_messages
-                ')
-                ->where('created_at', '>=', $startDate)
-                ->groupBy('date')
-                ->orderBy('date', 'desc')
-                ->get()
-                ->toArray();
-
-            // Calcula taxa de sucesso
-            foreach ($dailyStats as &$stat) {
-                $total = $stat->total_messages;
-                $stat->success_rate = $total > 0 ? round(($stat->successful_messages / $total) * 100, 2) : 0;
-            }
-
-            $filledStats = $this->fillMissingDays($dailyStats, $days);
-            
-            $this->cache[$cacheKey] = $filledStats;
-            $this->updateCacheTimestamp($cacheKey);
-
-            return $filledStats;
-
-        } catch (\Exception $e) {
-            error_log("Zapcel Daily Stats Error: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * Obtém estatísticas por tipo de evento
-     */
-    public function getEventTypeStatistics(int $days = 30): array
-    {
-        $cacheKey = "event_stats_{$days}";
-        if ($this->isCacheValid($cacheKey)) {
-            return $this->cache[$cacheKey];
-        }
-
-        try {
-            $startDate = date('Y-m-d', strtotime("-{$days} days"));
-            
-            $eventStats = Capsule::table('mod_zapcel_logs')
-                ->selectRaw('
-                    type as event_type,
-                    COUNT(*) as total_messages,
-                    SUM(status = "success") as successful_messages,
-                    SUM(status = "error") as failed_messages
-                ')
-                ->where('created_at', '>=', $startDate)
-                ->groupBy('type')
-                ->orderBy('total_messages', 'desc')
-                ->get()
-                ->toArray();
-
-            // Calcula taxa de sucesso
-            foreach ($eventStats as &$stat) {
-                $total = $stat->total_messages;
-                $stat->success_rate = $total > 0 ? round(($stat->successful_messages / $total) * 100, 2) : 0;
-            }
-
-            $this->cache[$cacheKey] = $eventStats;
-            $this->updateCacheTimestamp($cacheKey);
-
-            return $eventStats;
-
-        } catch (\Exception $e) {
-            error_log("Zapcel Event Stats Error: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * Obtém estatísticas de performance horária
-     */
-    public function getHourlyStatistics(int $days = 7): array
-    {
-        $cacheKey = "hourly_stats_{$days}";
-        if ($this->isCacheValid($cacheKey)) {
-            return $this->cache[$cacheKey];
-        }
-
-        try {
-            $startDate = date('Y-m-d H:i:s', strtotime("-{$days} days"));
-            
-            $hourlyStats = Capsule::table('mod_zapcel_logs')
-                ->selectRaw('
-                    HOUR(created_at) as hour,
-                    COUNT(*) as total_messages,
-                    SUM(status = "success") as successful_messages
-                ')
-                ->where('created_at', '>=', $startDate)
-                ->groupBy('hour')
-                ->orderBy('hour', 'asc')
-                ->get()
-                ->toArray();
-
-            // Calcula taxa de sucesso e preenche horas
-            foreach ($hourlyStats as &$stat) {
-                $stat->success_rate = $stat->total_messages > 0 ? 
-                    round(($stat->successful_messages / $stat->total_messages) * 100, 2) : 0;
-            }
-
-            $filledStats = $this->fillMissingHours($hourlyStats);
-            
-            $this->cache[$cacheKey] = $filledStats;
-            $this->updateCacheTimestamp($cacheKey);
-
-            return $filledStats;
-
-        } catch (\Exception $e) {
-            error_log("Zapcel Hourly Stats Error: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * Obtém alertas e problemas detectados
-     */
-    public function getSystemAlerts(): array
-    {
-        $alerts = [];
-
-        try {
-            // Verifica taxa de sucesso recente
-            $recentSuccessRate = $this->getRecentSuccessRate(24);
-            
-            if ($recentSuccessRate < 80) {
-                $alerts[] = [
-                    'type' => 'warning',
-                    'title' => 'Taxa de Sucesso Baixa',
-                    'message' => "A taxa de sucesso está em {$recentSuccessRate}%. Verifique a conexão com a API.",
-                    'icon' => 'exclamation-triangle',
-                    'timestamp' => date('Y-m-d H:i:s')
-                ];
-            }
-
-            // Verifica falhas consecutivas
-            $consecutiveFailures = $this->getConsecutiveFailures();
-            if ($consecutiveFailures >= 5) {
-                $alerts[] = [
-                    'type' => 'danger',
-                    'title' => 'Falhas Consecutivas',
-                    'message' => "{$consecutiveFailures} falhas consecutivas detectadas.",
-                    'icon' => 'times-circle',
-                    'timestamp' => date('Y-m-d H:i:s')
-                ];
-            }
-
-            // Verifica templates inativos
-            $inactiveTemplates = $this->getInactiveTemplatesCount();
-            if ($inactiveTemplates > 0) {
-                $alerts[] = [
-                    'type' => 'info',
-                    'title' => 'Templates Inativos',
-                    'message' => "{$inactiveTemplates} template(s) inativo(s).",
-                    'icon' => 'info-circle',
-                    'timestamp' => date('Y-m-d H:i:s')
-                ];
-            }
-
-        } catch (\Exception $e) {
-            error_log("Zapcel Alerts Error: " . $e->getMessage());
-        }
-
-        return $alerts;
-    }
-
-    /**
-     * Obtém relatório de clientes mais ativos
-     */
-    public function getTopClients(int $limit = 10): array
-    {
-        $cacheKey = "top_clients_{$limit}";
-        if ($this->isCacheValid($cacheKey)) {
-            return $this->cache[$cacheKey];
-        }
-
-        try {
-            $topClients = Capsule::table('mod_zapcel_logs as log')
-                ->selectRaw('
-                    log.client_id,
-                    c.firstname,
-                    c.lastname,
-                    c.companyname,
-                    COUNT(*) as total_messages,
-                    SUM(log.status = "success") as successful_messages
-                ')
-                ->leftJoin('tblclients as c', 'log.client_id', '=', 'c.id')
-                ->whereNotNull('log.client_id')
-                ->groupBy('log.client_id', 'c.firstname', 'c.lastname', 'c.companyname')
-                ->orderBy('total_messages', 'desc')
-                ->limit($limit)
-                ->get()
-                ->toArray();
-
-            // Calcula taxa de sucesso
-            foreach ($topClients as &$client) {
-                $client->success_rate = $client->total_messages > 0 ? 
-                    round(($client->successful_messages / $client->total_messages) * 100, 2) : 0;
-            }
-
-            $this->cache[$cacheKey] = $topClients;
-            $this->updateCacheTimestamp($cacheKey);
-
-            return $topClients;
-
-        } catch (\Exception $e) {
-            error_log("Zapcel Top Clients Error: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * Obtém relatório de templates mais utilizados
-     */
-    public function getTopTemplates(int $limit = 10): array
-    {
-        $cacheKey = "top_templates_{$limit}";
-        if ($this->isCacheValid($cacheKey)) {
-            return $this->cache[$cacheKey];
-        }
-
-        try {
-            $topTemplates = Capsule::table('mod_zapcel_templates as t')
-                ->selectRaw('
-                    t.id,
-                    t.name,
-                    t.trigger_event,
-                    t.usage_count,
-                    t.active,
-                    COUNT(log.id) as actual_usage
-                ')
-                ->leftJoin('mod_zapcel_logs as log', 't.trigger_event', '=', 'log.type')
-                ->groupBy('t.id', 't.name', 't.trigger_event', 't.usage_count', 't.active')
-                ->orderBy('t.usage_count', 'desc')
-                ->limit($limit)
-                ->get()
-                ->toArray();
-
-            $this->cache[$cacheKey] = $topTemplates;
-            $this->updateCacheTimestamp($cacheKey);
-
-            return $topTemplates;
-
-        } catch (\Exception $e) {
-            error_log("Zapcel Top Templates Error: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * Obtém métricas de performance da API
-     */
-    public function getPerformanceMetrics(): array
-    {
-        $cacheKey = 'performance_metrics';
-        if ($this->isCacheValid($cacheKey)) {
-            return $this->cache[$cacheKey];
-        }
-
-        try {
-            // Métricas básicas - foco em dados disponíveis
-            $totalMessages = $this->getTotalMessagesCount();
-            $successfulMessages = $this->getSuccessfulMessagesCount();
-            
-            $metrics = [
-                'avg_response_time' => 0, // Não temos este dado ainda
-                'max_response_time' => 0,
-                'min_response_time' => 0,
-                'total_requests' => $totalMessages,
-                'success_rate' => $totalMessages > 0 ? round(($successfulMessages / $totalMessages) * 100, 2) : 0
-            ];
-
-            $this->cache[$cacheKey] = $metrics;
-            $this->updateCacheTimestamp($cacheKey);
-
-            return $metrics;
-
-        } catch (\Exception $e) {
-            error_log("Zapcel Performance Metrics Error: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * Gera relatório completo em formato para exportação
-     */
-    public function generateFullReport(string $period = 'month'): array
-    {
-        $startDate = $this->getPeriodStartDate($period);
-        
-        try {
-            $report = [
-                'period' => $period,
-                'start_date' => $startDate,
-                'end_date' => date('Y-m-d H:i:s'),
-                'general_stats' => $this->getGeneralStatistics(),
-                'daily_stats' => $this->getDailyStatistics($this->getDaysForPeriod($period)),
-                'event_stats' => $this->getEventTypeStatistics($this->getDaysForPeriod($period)),
-                'top_clients' => $this->getTopClients(15),
-                'top_templates' => $this->getTopTemplates(15),
-                'performance_metrics' => $this->getPerformanceMetrics(),
-                'system_alerts' => $this->getSystemAlerts(),
-                'generated_at' => date('Y-m-d H:i:s')
-            ];
-
-            return $report;
-
-        } catch (\Exception $e) {
-            error_log("Zapcel Full Report Error: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    /**
-     * Limpa cache de estatísticas
-     */
-    public function clearCache(): bool
-    {
-        $this->cache = [];
-        return true;
-    }
-
-    // ========== MÉTODOS PRIVADOS ESPECÍFICOS DE ESTATÍSTICAS ==========
-
-    private function getTotalMessagesCount(): int
-    {
-        // CORREÇÃO v2.0.1: Filtra logs de debug/sistema
-        return Capsule::table('mod_zapcel_logs')
-            ->where(function($query) {
-                $query->where('event_type', 'NOT LIKE', 'debug_%')
-                      ->where('event_type', '!=', 'gateway_manager_debug')
-                      ->where('event_type', '!=', 'system_log');
-            })
-            ->whereIn('status', ['success', 'error'])
-            ->count();
-    }
-
-    private function getSuccessfulMessagesCount(): int
-    {
-        // CORREÇÃO v2.0.1: Filtra logs de debug/sistema
-        return Capsule::table('mod_zapcel_logs')
-            ->where('status', 'success')
-            ->where(function($query) {
-                $query->where('event_type', 'NOT LIKE', 'debug_%')
-                      ->where('event_type', '!=', 'gateway_manager_debug')
-                      ->where('event_type', '!=', 'system_log');
-            })
-            ->count();
-    }
-
-    private function getFailedMessagesCount(): int
-    {
-        // CORREÇÃO v2.0.1: Filtra logs de debug/sistema
-        return Capsule::table('mod_zapcel_logs')
-            ->where('status', 'error')
-            ->where(function($query) {
-                $query->where('event_type', 'NOT LIKE', 'debug_%')
-                      ->where('event_type', '!=', 'gateway_manager_debug')
-                      ->where('event_type', '!=', 'system_log');
-            })
-            ->count();
-    }
-
-    private function getSuccessRate(): float
-    {
-        $total = $this->getTotalMessagesCount();
-        $successful = $this->getSuccessfulMessagesCount();
-        
-        return $total > 0 ? round(($successful / $total) * 100, 2) : 0;
-    }
-
-    private function getTemplatesCount(): int
-    {
-        return Capsule::table('mod_zapcel_templates')->count();
-    }
-
-    private function getActiveTemplatesCount(): int
-    {
-        return Capsule::table('mod_zapcel_templates')->where('active', true)->count();
-    }
-
-    private function getInactiveTemplatesCount(): int
-    {
-        return Capsule::table('mod_zapcel_templates')->where('active', false)->count();
-    }
-
-    private function getTodayMessagesCount(): int
-    {
-        // CORREÇÃO v2.0.1: Filtra logs de debug/sistema
-        return Capsule::table('mod_zapcel_logs')
-            ->whereDate('created_at', date('Y-m-d'))
-            ->where(function($query) {
-                $query->where('event_type', 'NOT LIKE', 'debug_%')
-                      ->where('event_type', '!=', 'gateway_manager_debug')
-                      ->where('event_type', '!=', 'system_log');
-            })
-            ->whereIn('status', ['success', 'error'])
-            ->count();
-    }
-
-    private function getMonthMessagesCount(): int
-    {
-        // CORREÇÃO v2.0.1: Filtra logs de debug/sistema
-        return Capsule::table('mod_zapcel_logs')
-            ->whereYear('created_at', date('Y'))
-            ->whereMonth('created_at', date('m'))
-            ->where(function($query) {
-                $query->where('event_type', 'NOT LIKE', 'debug_%')
-                      ->where('event_type', '!=', 'gateway_manager_debug')
-                      ->where('event_type', '!=', 'system_log');
-            })
-            ->whereIn('status', ['success', 'error'])
-            ->count();
-    }
-
-    private function getMostUsedTemplate(): array
-    {
-        $template = Capsule::table('mod_zapcel_templates')
-            ->orderBy('usage_count', 'desc')
-            ->first();
-
-        return $template ? (array)$template : ['name' => 'Nenhum', 'usage_count' => 0];
-    }
-
-    private function getMostActiveClient(): array
-    {
-        $client = Capsule::table('mod_zapcel_logs')
-            ->selectRaw('client_id, COUNT(*) as message_count')
-            ->whereNotNull('client_id')
-            ->groupBy('client_id')
-            ->orderBy('message_count', 'desc')
-            ->first();
-
-        if ($client) {
-            $clientInfo = Capsule::table('tblclients')
-                ->where('id', $client->client_id)
-                ->first();
-                
-            return [
-                'client_id' => $client->client_id,
-                'name' => $clientInfo ? trim($clientInfo->firstname . ' ' . $clientInfo->lastname) : 'Cliente #' . $client->client_id,
-                'message_count' => $client->message_count
-            ];
-        }
-
-        return ['name' => 'Nenhum', 'message_count' => 0];
-    }
-
-    private function getRecentSuccessRate(int $hours = 24): float
-    {
-        $startDate = date('Y-m-d H:i:s', strtotime("-{$hours} hours"));
-        
-        $stats = Capsule::table('mod_zapcel_logs')
-            ->selectRaw('COUNT(*) as total, SUM(status = "success") as successful')
-            ->where('created_at', '>=', $startDate)
-            ->first();
-
-        if ($stats && $stats->total > 0) {
-            return round(($stats->successful / $stats->total) * 100, 2);
-        }
-
-        return 100;
-    }
-
-    private function getConsecutiveFailures(): int
-    {
-        $failures = Capsule::table('mod_zapcel_logs')
-            ->where('status', 'error')
-            ->orderBy('created_at', 'desc')
-            ->limit(10)
-            ->get();
-
-        $consecutive = 0;
-        foreach ($failures as $failure) {
-            if ($failure->status === 'error') {
-                $consecutive++;
-            } else {
-                break;
-            }
-        }
-
-        return $consecutive;
-    }
-
-    // ========== MÉTODOS PRIVADOS AUXILIARES ==========
-
-    private function isCacheValid(string $key): bool
-    {
-        if (!isset($this->cache[$key . '_timestamp'])) {
-            return false;
-        }
-
-        $timestamp = $this->cache[$key . '_timestamp'];
-        return (time() - $timestamp) < $this->cacheTtl;
-    }
-
-    private function updateCacheTimestamp(string $key): void
-    {
-        $this->cache[$key . '_timestamp'] = time();
-    }
-
-    private function fillMissingDays(array $stats, int $days): array
-    {
-        $filledStats = [];
-        $endDate = date('Y-m-d');
-        
-        for ($i = $days - 1; $i >= 0; $i--) {
-            $date = date('Y-m-d', strtotime("-{$i} days"));
-            $found = false;
-            
-            foreach ($stats as $stat) {
-                if ($stat->date === $date) {
-                    $filledStats[] = $stat;
-                    $found = true;
-                    break;
-                }
-            }
-            
-            if (!$found) {
-                $filledStats[] = (object)[
-                    'date' => $date,
-                    'total_messages' => 0,
-                    'successful_messages' => 0,
-                    'failed_messages' => 0,
-                    'success_rate' => 0
-                ];
-            }
-        }
-        
-        return $filledStats;
-    }
-
-    private function fillMissingHours(array $stats): array
-    {
-        $filledStats = [];
-        
-        for ($hour = 0; $hour < 24; $hour++) {
-            $found = false;
-            
-            foreach ($stats as $stat) {
-                if ($stat->hour == $hour) {
-                    $filledStats[] = $stat;
-                    $found = true;
-                    break;
-                }
-            }
-            
-            if (!$found) {
-                $filledStats[] = (object)[
-                    'hour' => $hour,
-                    'total_messages' => 0,
-                    'successful_messages' => 0,
-                    'success_rate' => 0
-                ];
-            }
-        }
-        
-        return $filledStats;
-    }
-
-    private function getPeriodStartDate(string $period): string
-    {
-        switch ($period) {
-            case 'day':
-                return date('Y-m-d 00:00:00');
-            case 'week':
-                return date('Y-m-d 00:00:00', strtotime('-1 week'));
-            case 'month':
-                return date('Y-m-d 00:00:00', strtotime('-1 month'));
-            case 'year':
-                return date('Y-m-d 00:00:00', strtotime('-1 year'));
-            default:
-                return date('Y-m-d 00:00:00', strtotime('-1 month'));
-        }
-    }
-
-    private function getDaysForPeriod(string $period): int
-    {
-        switch ($period) {
-            case 'day': return 1;
-            case 'week': return 7;
-            case 'month': return 30;
-            case 'year': return 365;
-            default: return 30;
-        }
-    }
-
-    private function getFallbackStatistics(): array
-    {
-        return [
-            'total_messages' => 0,
-            'successful_messages' => 0,
-            'failed_messages' => 0,
-            'success_rate' => 0,
-            'total_templates' => 0,
-            'active_templates' => 0,
-            'validated_clients' => 0,
-            'validation_rate' => 0,
-            'today_messages' => 0,
-            'month_messages' => 0,
-            'most_used_template' => ['name' => 'N/A', 'usage_count' => 0],
-            'most_active_client' => ['name' => 'N/A', 'message_count' => 0],
-        ];
-    }
-}
+<?php //00507
+// 14.0 82
+if(!extension_loaded('ionCube Loader')){$__oc=strtolower(substr(php_uname(),0,3));$__ln='ioncube_loader_'.$__oc.'_'.substr(phpversion(),0,3).(($__oc=='win')?'.dll':'.so');if(function_exists('dl')){@dl($__ln);}if(function_exists('_il_exec')){return _il_exec();}$__ln='/ioncube/'.$__ln;$__oid=$__id=realpath(ini_get('extension_dir'));$__here=dirname(__FILE__);if(strlen($__id)>1&&$__id[1]==':'){$__id=str_replace('\\','/',substr($__id,2));$__here=str_replace('\\','/',substr($__here,2));}$__rd=str_repeat('/..',substr_count($__id,'/')).$__here.'/';$__i=strlen($__rd);while($__i--){if($__rd[$__i]=='/'){$__lp=substr($__rd,0,$__i).$__ln;if(file_exists($__oid.$__lp)){$__ln=$__lp;break;}}}if(function_exists('dl')){@dl($__ln);}}else{die('The file '.__FILE__." is corrupted.\n");}if(function_exists('_il_exec')){return _il_exec();}echo("Site error: the ".(php_sapi_name()=='cli'?'ionCube':'<a href="http://www.ioncube.com">ionCube</a>')." PHP Loader needs to be installed. This is a widely used PHP extension for running ionCube protected PHP code, website security and malware blocking.\n\nPlease visit ".(php_sapi_name()=='cli'?'get-loader.ioncube.com':'<a href="http://get-loader.ioncube.com">get-loader.ioncube.com</a>')." for install assistance.\n\n");exit(199);
+
+?>
+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

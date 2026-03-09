@@ -1,1743 +1,605 @@
-<?php
-/**
- * Zapcel WHMCS
- * Módulo de notificações via WhatsApp profissional
- * 
- * @package    Zapcel
- * @author     Hostcel
- * @version    2.0.0
- * @license    Commercial
- */
-
-// Bloqueia acesso direto
-if (!defined('WHMCS')) {
-    die('Acesso não autorizado.');
-}
-
-use WHMCS\Database\Capsule;
-use WHMCS\Module\Addon\Zapcel\Api\WhatsAppAPI;
-use WHMCS\Module\Addon\Zapcel\Api\StatisticsManager;
-
-// CORREÇÃO: Incluir o arquivo do dispatcher administrativo
-require_once __DIR__ . '/admin/index.php';
-
-/**
- * Configuração do módulo
- */
-function zapcel_config()
-{
-    global $CONFIG;
-    
-    // Verifica atualizações
-    $currentVersion = '2.1.1';
-    $updateInfo = zapcel_check_updates($currentVersion);
-    
-    return [
-        'name' => 'Zapcel WHMCS',
-        'description' => 'Sistema profissional de notificações via WhatsApp com templates otimizados e relatórios detalhados.',
-        'version' => $currentVersion,
-        'author' => '<a href="https://www.hostcel.com.br" target="_blank"><img src="https://www.hostcel.com.br/wp-content/uploads/2022/12/logo-marca-hostcel.png" height="20" alt="Hostcel"/></a>',
-        'language' => 'portuguese-br',
-        'fields' => [
-            'zapcel_enabled' => [
-                'FriendlyName' => 'Ativar Zapcel',
-                'Type' => 'yesno',
-                'Description' => 'Habilitar o envio de notificações via WhatsApp',
-                'Default' => 'on',
-            ],
-            'zapcel_instance_id' => [
-                'FriendlyName' => 'ID da Instância',
-                'Type' => 'text',
-                'Size' => '15',
-                'Default' => '',
-                'Description' => 'ID da instância do Zapcel',
-            ],
-            'zapcel_access_token' => [
-                'FriendlyName' => 'Token de Acesso',
-                'Type' => 'text',
-                'Size' => '15',
-                'Default' => '',
-                'Description' => 'Token de acesso da API Zapcel',
-            ],
-            'zapcel_validation' => [
-                'FriendlyName' => 'Validação WhatsApp',
-                'Type' => 'dropdown',
-                'Options' => [
-                    '0' => 'Desativada',
-                    '1' => 'Ativada',
-                ],
-                'Default' => '0',
-                'Description' => 'Exigir validação do número WhatsApp para acesso à área do cliente',
-            ],
-            'zapcel_phone_source' => [
-                'FriendlyName' => 'Origem do Número',
-                'Type' => 'text',
-                'Default' => 'phonenumber',
-                'Description' => 'Campo do cadastro do cliente onde está o número WhatsApp (padrão: phonenumber)',
-            ],
-            'zapcel_signature' => [
-                'FriendlyName' => 'Assinatura',
-                'Type' => 'textarea',
-                'Rows' => 3,
-                'Cols' => 60,
-                'Default' => 'Atenciosamente, Equipe ' . $CONFIG['CompanyName'],
-                'Description' => 'Assinatura usada nas mensagens (variável: {assinatura})',
-            ],
-            'enable_logging' => [
-                'FriendlyName' => 'Ativar logging detalhado',
-                'Type' => 'dropdown',
-                'Options' => [
-                    '0' => 'Desativado',
-                    '1' => 'Ativado',
-                ],
-                'Default' => '0',
-                'Description' => 'Recomendado para debug e monitoramento do sistema (pode gerar muitos registros)',
-            ],
-            'zapcel_support' => [
-                'FriendlyName' => 'Suporte & Atualizações',
-                'Description' => zapcel_render_support_field($currentVersion, $updateInfo),
-            ],
-        ],
-    ];
-}
-
-/**
- * Verifica atualizações disponíveis
- */
-function zapcel_check_updates($currentVersion)
-{
-    $currentVersionInt = (int) preg_replace("/[^0-9]/", "", $currentVersion);
-    
-    try {
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL => 'https://www.hostcel.com.br/wp-outros/modulos/?modulo=zapcel',
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 10,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_USERAGENT => 'Zapcel-WHMCS/' . $currentVersion,
-        ]);
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($httpCode === 200 && !empty($response)) {
-            $latestVersion = trim($response);
-            $latestVersionInt = (int) preg_replace("/[^0-9]/", "", $latestVersion);
-            
-            return [
-                'latest' => $latestVersion,
-                'latest_int' => $latestVersionInt,
-                'current_int' => $currentVersionInt,
-                'status' => $latestVersionInt <=> $currentVersionInt,
-            ];
-        }
-    } catch (Exception $e) {
-        // Silencia erros de verificação de atualização
-    }
-    
-    return null;
-}
-
-/**
- * Renderiza campo de suporte com informações de versão
- */
-function zapcel_render_support_field($currentVersion, $updateInfo)
-{
-    $output = '&copy; 2017-' . date('Y') . ' <a href="https://www.hostcel.com.br" target="_blank" style="text-decoration:underline;">Hostcel</a>';
-    $output .= ' - Sua Versão: ' . $currentVersion;
-    
-    if ($updateInfo) {
-        if ($updateInfo['status'] === 0) {
-            $output .= ' <i class="fas fa-check-circle" style="color:#4E7408;"></i> <span style="color:#4E7408;">Versão mais recente!</span>';
-        } elseif ($updateInfo['status'] === 1) {
-            $output .= ' <i class="fas fa-exclamation-circle" style="color:#d3678d;"></i> <span style="color:#d3678d;">Atualização disponível: ' . $updateInfo['latest'] . '</span>, <a style="color:#d3678d;" href="https://provedor.co/modulozapcel" target="_blank">Download</a>';
-        } else {
-            $output .= ' <i class="fas fa-exclamation-circle" style="color:#d6b200;"> <span style="color:#d6b200;">Você está executando uma versão beta.</span>';
-        }
-    } else {
-        $output .= ' <i class="fas fa-sync-alt text-muted"></i> <span class="text-muted">Verificação indisponível</span>';
-    }
-    
-    $output .= ' - <g-emoji class="g-emoji" alias="heart" fallback-src="https://github.githubassets.com/images/icons/emoji/unicode/2764.png">❤️</g-emoji> ';
-    $output .= '<a href="https://zap.hostcel.com.br" target="_blank" style="text-decoration:underline;">Testar Zapcel</a>';
-    
-    return $output;
-}
-
-/**
- * Ativação do módulo - VERSÃO CORRIGIDA UTF8MB4
- */
-function zapcel_activate()
-{
-    try {
-        $currentTime = date('Y-m-d H:i:s');
-        
-        // Tabela de templates de mensagem
-        if (!Capsule::schema()->hasTable('mod_zapcel_templates')) {
-            Capsule::schema()->create('mod_zapcel_templates', function ($table) {
-                $table->increments('id');
-                $table->string('name', 255);
-                $table->string('trigger_event', 100);
-                $table->text('template');
-                $table->boolean('active')->default(true);
-                $table->integer('usage_count')->default(0);
-                $table->timestamp('created_at')->useCurrent();
-                $table->timestamp('updated_at')->useCurrent();
-                
-                // DEFINE CHARSET E COLLATION DA TABELA
-                $table->engine = 'InnoDB';
-                $table->charset = 'utf8mb4';
-                $table->collation = 'utf8mb4_general_ci';
-            });
-        }
-        
-        // Tabela de validação de WhatsApp
-        if (!Capsule::schema()->hasTable('mod_zapcel_validation')) {
-            Capsule::schema()->create('mod_zapcel_validation', function ($table) {
-                $table->increments('id');
-                $table->integer('client_id')->unsigned();
-                $table->string('phone_number', 20);
-                $table->string('verification_code', 10)->nullable(); // NOME CORRETO
-                $table->boolean('validated')->default(false);
-                $table->string('status', 20)->default('pending'); // CAMPO ADICIONADO
-                $table->integer('attempts')->default(0); // CAMPO ADICIONADO
-                $table->timestamp('validated_at')->nullable();
-                $table->timestamp('created_at')->useCurrent();
-                $table->timestamp('updated_at')->useCurrent();
-                
-                $table->unique('client_id');
-                $table->index('verification_code'); // NOME CORRETO
-                
-                // DEFINE CHARSET E COLLATION DA TABELA
-                $table->engine = 'InnoDB';
-                $table->charset = 'utf8mb4';
-                $table->collation = 'utf8mb4_general_ci';
-            });
-        }
-        
-        // Tabela de logs e estatísticas
-        if (!Capsule::schema()->hasTable('mod_zapcel_logs')) {
-            Capsule::schema()->create('mod_zapcel_logs', function ($table) {
-                $table->increments('id');
-                $table->integer('client_id')->unsigned()->nullable();
-                $table->string('event_type', 100);
-                $table->string('phone_number', 20)->nullable();
-                $table->text('message');
-                $table->boolean('success');
-                $table->text('response')->nullable();
-                $table->string('message_id', 100)->nullable();
-                $table->timestamp('created_at')->useCurrent();
-                $table->timestamp('updated_at')->useCurrent();
-                
-                $table->index('client_id');
-                $table->index('event_type');
-                $table->index('success');
-                $table->index('created_at');
-                
-                // DEFINE CHARSET E COLLATION DA TABELA
-                $table->engine = 'InnoDB';
-                $table->charset = 'utf8mb4';
-                $table->collation = 'utf8mb4_general_ci';
-            });
-        }
-        
-        // Tabela de gateways de pagamento
-        if (!Capsule::schema()->hasTable('mod_zapcel_gateways')) {
-            Capsule::schema()->create('mod_zapcel_gateways', function ($table) {
-                $table->increments('id');
-                $table->string('gateway_name', 100);
-                $table->string('display_name', 255);
-                $table->boolean('active')->default(false);
-                $table->text('config')->nullable();
-                $table->timestamp('created_at')->useCurrent();
-                $table->timestamp('updated_at')->useCurrent();
-                
-                $table->unique('gateway_name');
-                
-                // DEFINE CHARSET E COLLATION DA TABELA
-                $table->engine = 'InnoDB';
-                $table->charset = 'utf8mb4';
-                $table->collation = 'utf8mb4_general_ci';
-            });
-        }
-
-        // Tabela de Auto Login - Tokens
-        if (!Capsule::schema()->hasTable('mod_zapcel_autologin')) {
-            Capsule::schema()->create('mod_zapcel_autologin', function ($table) {
-                $table->increments('id');
-                $table->integer('client_id')->unsigned();
-                $table->string('token', 32);
-                $table->string('target_type', 20);
-                $table->integer('target_id')->unsigned();
-                $table->timestamp('expires_at');
-                $table->string('status', 20)->default('active');
-                $table->integer('access_count')->default(0);
-                $table->timestamp('last_access_at')->nullable();
-                $table->string('last_ip', 45)->nullable();
-                $table->timestamp('created_at')->useCurrent();
-                
-                $table->unique('token');
-                $table->index('client_id');
-                $table->index('status');
-                $table->index('expires_at');
-                $table->index(['target_type', 'target_id']);
-                $table->index(['client_id', 'target_type', 'target_id']);
-                
-                // DEFINE CHARSET E COLLATION DA TABELA
-                $table->engine = 'InnoDB';
-                $table->charset = 'utf8mb4';
-                $table->collation = 'utf8mb4_general_ci';
-            });
-        }
-
-        // Tabela de Auto Login - Acessos Detalhados
-        if (!Capsule::schema()->hasTable('mod_zapcel_autologin_access')) {
-            Capsule::schema()->create('mod_zapcel_autologin_access', function ($table) {
-                $table->increments('id');
-                $table->integer('autologin_id')->unsigned();
-                $table->string('ip_address', 45);
-                $table->integer('access_count')->default(1);
-                $table->timestamp('first_access');
-                $table->timestamp('last_access');
-                $table->text('user_agent')->nullable();
-                
-                $table->index('autologin_id');
-                $table->index('ip_address');
-                $table->index('last_access');
-                
-                // DEFINE CHARSET E COLLATION DA TABELA
-                $table->engine = 'InnoDB';
-                $table->charset = 'utf8mb4';
-                $table->collation = 'utf8mb4_general_ci';
-                
-                // Foreign key (não suportado diretamente no Schema Builder)
-                // Será criado via SQL raw após a criação
-            });
-            
-            // Adiciona foreign key manualmente
-            try {
-                Capsule::statement('
-                    ALTER TABLE `mod_zapcel_autologin_access`
-                    ADD CONSTRAINT `fk_autologin_access`
-                    FOREIGN KEY (`autologin_id`)
-                    REFERENCES `mod_zapcel_autologin`(`id`)
-                    ON DELETE CASCADE
-                ');
-            } catch (Exception $e) {
-                // Ignora se já existir
-            }
-        }
-        
-        /*
-            * Cria/atualiza as tabelas mod_zapcel_campaigns e mod_zapcel_campaign_queue (V3)
-            * - Mantém o padrão do módulo (engine/charset/collation)
-            * - Cria índices e UNIQUE para impedir duplicidade
-            * - Cria FK com ON DELETE CASCADE
-        */
-        function zapcel_create_campaign_tables()
-        {
-            // =========================
-            // mod_zapcel_campaigns
-            // =========================
-            if (!Capsule::schema()->hasTable('mod_zapcel_campaigns')) {
-                Capsule::schema()->create('mod_zapcel_campaigns', function ($table) {
-                    $table->increments('id');
-        
-                    $table->string('name', 255);
-                    $table->text('message_template');
-                    $table->string('language', 10)->default('pt');
-                    $table->text('filters'); // JSON
-        
-                    $table->dateTime('schedule_start')->nullable();
-        
-                    // enums serão ajustados via SQL raw abaixo
-                    $table->string('send_mode', 20)->default('business_hours'); // placeholder
-                    $table->string('status', 20)->default('draft');            // placeholder
-        
-                    $table->integer('delay_min')->default(7);
-                    $table->integer('delay_max')->default(13);
-                    $table->integer('batch_size')->default(21);
-        
-                    $table->integer('total_contacts')->default(0);
-                    $table->integer('sent_count')->default(0);
-                    $table->integer('pending_count')->default(0);
-                    $table->integer('failed_count')->default(0);
-        
-                    $table->dateTime('last_run')->nullable();
-        
-                    // timestamps padrão
-                    $table->timestamps();
-        
-                    // ENGINE/CHARSET/COLLATION
-                    $table->engine = 'InnoDB';
-                    $table->charset = 'utf8mb4';
-                    $table->collation = 'utf8mb4_unicode_ci';
-                });
-            }
-        
-            // Ajustes exatos do seu dump (ENUMs + defaults + índices)
-            try {
-                Capsule::statement("
-                    ALTER TABLE `mod_zapcel_campaigns`
-                    MODIFY `send_mode` enum('all_day','business_hours') DEFAULT 'business_hours'
-                ");
-            } catch (\Exception $e) {}
-        
-            try {
-                Capsule::statement("
-                    ALTER TABLE `mod_zapcel_campaigns`
-                    MODIFY `status` enum('draft','active','paused','finished','scheduled') DEFAULT 'draft'
-                ");
-            } catch (\Exception $e) {}
-        
-            try { Capsule::statement("CREATE INDEX `idx_status` ON `mod_zapcel_campaigns` (`status`)"); } catch (\Exception $e) {}
-            try { Capsule::statement("CREATE INDEX `idx_schedule_start` ON `mod_zapcel_campaigns` (`schedule_start`)"); } catch (\Exception $e) {}
-        
-            // =========================
-            // mod_zapcel_campaign_queue
-            // =========================
-            if (!Capsule::schema()->hasTable('mod_zapcel_campaign_queue')) {
-                Capsule::schema()->create('mod_zapcel_campaign_queue', function ($table) {
-                    $table->increments('id');
-        
-                    $table->integer('campaign_id')->unsigned();
-                    $table->integer('client_id')->unsigned();
-        
-                    // no dump final: NOT NULL DEFAULT 0
-                    $table->integer('service_id')->unsigned()->default(0);
-        
-                    // dump: varchar(20)
-                    $table->string('phone_number', 20);
-        
-                    // dump: message NOT NULL
-                    $table->text('message');
-        
-                    // enum será ajustado via SQL raw abaixo
-                    $table->string('status', 20)->default('pending'); // placeholder
-        
-                    $table->integer('attempts')->default(0);
-        
-                    $table->dateTime('sent_at')->nullable();
-                    $table->text('error_message')->nullable();
-        
-                    $table->integer('delay_used')->nullable();
-                    $table->dateTime('next_send_at')->nullable();
-                    $table->dateTime('processing_started_at')->nullable();
-        
-                    $table->timestamps();
-        
-                    // ENGINE/CHARSET/COLLATION
-                    $table->engine = 'InnoDB';
-                    $table->charset = 'utf8mb4';
-                    $table->collation = 'utf8mb4_unicode_ci';
-                });
-            }
-        
-            // Ajusta ENUM exato da fila
-            try {
-                Capsule::statement("
-                    ALTER TABLE `mod_zapcel_campaign_queue`
-                    MODIFY `status` enum('pending','processing','sent','failed') DEFAULT 'pending'
-                ");
-            } catch (\Exception $e) {}
-        
-            // Índices / anti-duplicidade (do seu dump)
-            try { Capsule::statement("CREATE UNIQUE INDEX `uq_campaign_client_service` ON `mod_zapcel_campaign_queue` (`campaign_id`,`client_id`,`service_id`)"); } catch (\Exception $e) {}
-            try { Capsule::statement("CREATE UNIQUE INDEX `uq_campaign_phone` ON `mod_zapcel_campaign_queue` (`campaign_id`,`phone_number`)"); } catch (\Exception $e) {}
-        
-            try { Capsule::statement("CREATE INDEX `idx_campaign_id` ON `mod_zapcel_campaign_queue` (`campaign_id`)"); } catch (\Exception $e) {}
-            try { Capsule::statement("CREATE INDEX `idx_status` ON `mod_zapcel_campaign_queue` (`status`)"); } catch (\Exception $e) {}
-            try { Capsule::statement("CREATE INDEX `idx_next_send_at` ON `mod_zapcel_campaign_queue` (`next_send_at`)"); } catch (\Exception $e) {}
-            try { Capsule::statement("CREATE INDEX `idx_processing` ON `mod_zapcel_campaign_queue` (`status`,`processing_started_at`)"); } catch (\Exception $e) {}
-        
-            // índice mais importante para consumo do cron (campanha + status + next_send_at)
-            try { Capsule::statement("CREATE INDEX `idx_campaign_status_next` ON `mod_zapcel_campaign_queue` (`campaign_id`,`status`,`next_send_at`)"); } catch (\Exception $e) {}
-        
-            try { Capsule::statement("CREATE INDEX `idx_processing_started` ON `mod_zapcel_campaign_queue` (`processing_started_at`)"); } catch (\Exception $e) {}
-            try { Capsule::statement("CREATE INDEX `idx_client` ON `mod_zapcel_campaign_queue` (`client_id`)"); } catch (\Exception $e) {}
-        
-            // Foreign Key (igual seu padrão do autologin)
-            try {
-                Capsule::statement("
-                    ALTER TABLE `mod_zapcel_campaign_queue`
-                    ADD CONSTRAINT `fk_campaign`
-                    FOREIGN KEY (`campaign_id`)
-                    REFERENCES `mod_zapcel_campaigns`(`id`)
-                    ON DELETE CASCADE
-                ");
-            } catch (\Exception $e) {}
-        }
-        
-        // Insere templates padrão com data correta
-        zapcel_install_default_templates();
-        zapcel_create_campaign_tables();
-        
-        return [
-            'status' => 'success',
-            'description' => 'Zapcel WHMCS ativado com sucesso! Templates padrão instalados.'
-        ];
-        
-    } catch (Exception $e) {
-        return [
-            'status' => 'error',
-            'description' => 'Erro na ativação: ' . $e->getMessage()
-        ];
-    }
-}
-
-/**
- * Templates padrão melhorados - Tom simpático, educado e leve
- * Emojis seguros: ✅❌⚠️✔️⭐✉️☎️⚡ℹ️❗▶️⏸️⏹️⭕✖️⚙️⚫➡️▪️⬆️⬇️⬅️➕➖◼️◻️◾▫️●♻️⏰⭕™️
- */
-function zapcel_install_default_templates()
-{
-    $defaultTemplates = [
-        // 1. VALIDAÇÃO WHATSAPP
-        [
-            'name' => 'Validação WhatsApp',
-            'trigger_event' => 'whatsapp_validation',
-            'template' => "✔️ *Validação de WhatsApp*
-
-Olá *{cliente}*, tudo bem?
-
-Para validar seu número e receber nossas notificações, use o código abaixo:
-
-⚡ *Código:* `{codigo_verificacao}`
-
-⏰ Válido por 15 minutos
-
-➡️ Acesse sua conta e insira este código para concluir.
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 2. CLIENTE ADICIONADO
-        [
-            'name' => 'Boas-vindas',
-            'trigger_event' => 'client_added',
-            'template' => "⭐ *Bem-vindo(a) à {provedor}!*
-
-Olá *{cliente}*, é um prazer tê-lo(a) conosco!
-
-✅ Seu cadastro foi realizado com sucesso
-✉️ E-mail: {email}
-☎️ Telefone: {telefone}
-⏰ Data: {data_cadastro}
-
-▶️ *Acesse sua área do cliente:*
-{url_whmcs}
-
-ℹ️ Precisa de ajuda? Estamos à disposição!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 3. SENHA ALTERADA
-        [
-            'name' => 'Senha Alterada',
-            'trigger_event' => 'password_changed',
-            'template' => "⚙️ *Senha Alterada com Sucesso*
-
-Olá *{cliente}*,
-
-Sua senha foi alterada em *{data_alteracao}*.
-
-⚠️ Se não foi você, entre em contato imediatamente!
-
-✔️ *Dicas de segurança:*
-▪️ Use senhas fortes e únicas
-▪️ Não compartilhe suas credenciais
-▪️ Ative a autenticação em duas etapas
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 4. FATURA CRIADA
-        [
-            'name' => 'Fatura Criada',
-            'trigger_event' => 'invoice_created',
-            'template' => "✔️ *Nova Fatura Disponível*
-
-Olá *{cliente}*,
-
-Uma nova fatura foi gerada em sua conta:
-
-⭕ *Detalhes:*
-▪️ Fatura: *#{numero_fatura}*
-▪️ Valor: *{valor}*
-▪️ Vencimento: *{vencimento}*
-▪️ Itens: {itens_fatura}
-
-⚡ Abaixo o código *PIX copia e cola*:
-{quebrar_mensagem}
-{codigopix}
-{quebrar_mensagem}
-✔️ Vou enviar o *QRCode do Pix*:
-{quebrar_mensagem}
-{qr_code_url}
-{quebrar_mensagem}
-✔️ *Código de barras:*
-{quebrar_mensagem}
-{linhadigitavel}
-{quebrar_mensagem}
-
-➡️ *Acessar fatura completa:*
-{link_fatura}
-
-ℹ️ Pague em dia e evite suspensões!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 5. FATURA CANCELADA
-        [
-            'name' => 'Fatura Cancelada',
-            'trigger_event' => 'invoice_cancelled',
-            'template' => "✖️ *Fatura Cancelada*
-
-Olá *{cliente}*,
-
-A fatura *#{numero_fatura}* foi cancelada.
-
-⭕ *Detalhes:*
-▪️ Valor: {valor}
-▪️ Cancelado em: *{data_cancelamento}*
-▪️ Motivo: {motivo_cancelamento}
-
-✅ Esta fatura não requer mais pagamento.
-
-➡️ *Ver detalhes:*
-{link_fatura}
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 6. LEMBRETE DE VENCIMENTO
-        [
-            'name' => 'Lembrete de Vencimento',
-            'trigger_event' => 'invoice_reminder',
-            'template' => "⏰ *Lembrete: Fatura Vencendo!*
-
-Olá *{cliente}*,
-
-⚠️ Venvimento: *{vencimento}*
-
-⭕ *Detalhes:*
-▪️ Fatura: *#{numero_fatura}*
-▪️ Valor: *{valor}*
-▪️ Dias restantes: {dias_vencimento}
-
-⚡ Abaixo o código *PIX copia e cola*:
-{quebrar_mensagem}
-{codigopix}
-{quebrar_mensagem}
-✔️ Vou enviar o *QRCode do Pix*:
-{quebrar_mensagem}
-{qr_code_url}
-{quebrar_mensagem}
-✔️ *Código de barras:*
-{quebrar_mensagem}
-{linhadigitavel}
-{quebrar_mensagem}
-
-➡️ *Ver fatura:*
-{link_fatura}
-
-⚫ *Evite:*
-▪️ Suspensão do serviço
-▪️ Juros e multas
-▪️ Interrupção no atendimento
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 7. PAGAMENTO CONFIRMADO
-        [
-            'name' => 'Pagamento Confirmado',
-            'trigger_event' => 'invoice_paid',
-            'template' => "✅ *Pagamento Confirmado!*
-
-Olá *{cliente}*,
-
-⭐ Recebemos seu pagamento com sucesso!
-
-⭕ *Detalhes:*
-▪️ Fatura: *#{numero_fatura}*
-▪️ Valor: *{valor}*
-▪️ Pago em: *{data_pagamento}*
-▪️ Método: {metodo_pagamento}
-
-✔️ Recibo disponível em sua área do cliente
-
-▶️ Seus serviços continuam ativos e funcionando perfeitamente!
-
-⭐ *Obrigado pela confiança!*
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 8. TICKET ABERTO
-        [
-            'name' => 'Ticket Aberto',
-            'trigger_event' => 'ticket_opened',
-            'template' => "✔️ *Ticket Aberto*
-
-Olá *{cliente}*,
-
-Seu ticket foi registrado com sucesso!
-
-⭕ *Informações:*
-▪️ Ticket: *#{numero_ticket}*
-▪️ Assunto: *{assunto}*
-▪️ Departamento: {departamento}
-▪️ Prioridade: {prioridade}
-
-⏰ *Tempo médio de resposta:* 2 horas
-
-➡️ *Acompanhar ticket:*
-{link_ticket}
-
-✅ Estamos trabalhando para resolver!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 9. RESPOSTA NO TICKET
-        [
-            'name' => 'Resposta no Ticket',
-            'trigger_event' => 'ticket_reply',
-            'template' => "✉️ *Nova Resposta no Ticket*
-
-Olá *{cliente}*,
-
-Sua solicitação foi respondida!
-
-✔️ *Ticket:* #{numero_ticket}
-⭕ *Assunto:* {assunto}
-
-▪️ *Atendente:* {atendente}
-
-➡️ *Acessar ticket:*
-{link_ticket}
-
-ℹ️ Precisa de mais ajuda? Responda no ticket!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 10. SERVIÇO ATIVADO
-        [
-            'name' => 'Serviço Ativado',
-            'trigger_event' => 'service_activated',
-            'template' => "▶️ *Serviço Ativado!*
-
-Olá *{cliente}*,
-
-⭐ Seu serviço foi ativado com sucesso!
-
-⭕ *Detalhes:*
-▪️ Serviço: *{servico}*
-▪️ Domínio: *{dominio}*
-▪️ Ativado em: *{data_ativacao}*
-
-✔️ *Próximos passos:*
-1. Acesse o painel de controle
-2. Configure suas preferências
-3. Comece a usar!
-
-➡️ *Área do cliente:*
-{url_whmcs}
-
-ℹ️ Precisa de ajuda? Estamos aqui!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 11. SERVIÇO SUSPENSO
-        [
-            'name' => 'Serviço Suspenso',
-            'trigger_event' => 'service_suspended',
-            'template' => "⏸️ *Serviço Suspenso*
-
-Olá *{cliente}*,
-
-Seu serviço foi suspenso temporariamente.
-
-⭕ *Detalhes:*
-▪️ Serviço: *{servico}*
-▪️ Domínio: *{dominio}*
-▪️ Suspenso em: *{data_suspensao}*
-▪️ Motivo: {motivo}
-
-♻️ *Para reativar:*
-1. Regularize pendências financeiras
-2. Entre em contato conosco
-3. Aguarde a reativação
-
-☎️ *Suporte:*
-{url_whmcs}
-
-⏰ Resolva rápido para evitar cancelamento!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 12. SERVIÇO REATIVADO
-        [
-            'name' => 'Serviço Reativado',
-            'trigger_event' => 'service_unsuspended',
-            'template' => "✅ *Serviço Reativado!*
-
-Olá *{cliente}*,
-
-⭐ Seu serviço foi reativado com sucesso!
-
-⭕ *Detalhes:*
-▪️ Serviço: *{servico}*
-▪️ Domínio: *{dominio}*
-▪️ Reativado em: *{data_reativacao}*
-
-▶️ *Status:* Suspenso → *Ativo*
-
-✔️ Tudo voltou ao normal! Seu serviço já está funcionando.
-
-ℹ️ *Dica:* Mantenha seus pagamentos em dia para evitar novas suspensões.
-
-⭐ *Obrigado por resolver!*
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 13. SERVIÇO CANCELADO
-        [
-            'name' => 'Serviço Cancelado',
-            'trigger_event' => 'service_terminated',
-            'template' => "⏹️ *Serviço Cancelado*
-
-Olá *{cliente}*,
-
-Seu serviço foi cancelado conforme solicitado.
-
-⭕ *Detalhes:*
-▪️ Serviço: {servico}
-▪️ Domínio: {dominio}
-▪️ Cancelado em: *{data_cancelamento}*
-
-⚙️ *Backup de dados:*
-Seus dados estarão disponíveis por 7 dias para download.
-
-⬅️ *Quer voltar?*
-Estamos sempre aqui para atendê-lo novamente!
-
-⭐ Sentiremos sua falta!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 14. SOLICITAÇÃO DE CANCELAMENTO
-        [
-            'name' => 'Solicitação de Cancelamento',
-            'trigger_event' => 'cancellation_request',
-            'template' => "✔️ *Solicitação de Cancelamento Recebida*
-
-Olá *{cliente}*,
-
-Recebemos sua solicitação de cancelamento.
-
-⭕ *Detalhes:*
-▪️ Serviço: *{nome_servico}*
-▪️ ID: #{id_servico}
-▪️ Domínio: {dominio}
-▪️ Tipo: {tipo_cancelamento}
-▪️ Razão: {razao_cancelamento}
-
-⏰ *Processamento:*
-Sua solicitação será processada em até 24h.
-
-ℹ️ *Importante:*
-▪️ Faça backup dos seus dados antes do cancelamento
-▪️ O serviço permanecerá ativo até a data final
-
-☎️ *Dúvidas?* Entre em contato!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 15. CLIENTE EDITADO
-        [
-            'name' => 'Dados Atualizados',
-            'trigger_event' => 'client_edited',
-            'template' => "⚙️ *Dados Atualizados*
-
-Olá *{cliente}*,
-
-Seus dados foram atualizados com sucesso!
-
-⭕ *Alterações realizadas:*
-{alteracoes}
-
-⏰ *Atualizado em:* {data_alteracao}
-
-⚠️ *Segurança:*
-Caso não tenha sido você, entre em contato imediatamente.
-
-☎️ *Contato:*
-{url_whmcs}
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 16. COTAÇÃO CRIADA
-        [
-            'name' => 'Cotação Criada',
-            'trigger_event' => 'quote_created',
-            'template' => "✔️ *Nova Cotação Disponível*
-
-Olá *{cliente}*,
-
-Preparamos uma cotação personalizada para você!
-
-⭕ *Detalhes:*
-▪️ Cotação: *#{numero_cotacao}*
-▪️ Assunto: *{subject_cotacao}*
-▪️ Valor: *{valor_cotacao}*
-▪️ Validade: *{validade_cotacao}*
-▪️ Status: {status_cotacao}
-
-◼️ *Itens incluídos:*
-{itens_cotacao}
-
-✔️ *Próximos passos:*
-1. Revise os detalhes
-2. Aprove a cotação
-3. Inicie o serviço
-
-ℹ️ Dúvidas? Responda este contato!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 17. COTAÇÃO MODIFICADA
-        [
-            'name' => 'Cotação Atualizada',
-            'trigger_event' => 'quote_modified',
-            'template' => "♻️ *Cotação Atualizada*
-
-Olá *{cliente}*,
-
-Sua cotação foi atualizada!
-
-⭕ *Detalhes:*
-▪️ Cotação: *#{numero_cotacao}*
-▪️ Assunto: *{subject_cotacao}*
-▪️ Valor: *{valor_cotacao}*
-▪️ Status: {status_cotacao}
-
-⚙️ *Alterações realizadas:*
-{alteracoes}
-
-◼️ *Itens revisados:*
-{itens_cotacao}
-
-⏰ *Validade:* {validade_cotacao}
-
-ℹ️ Precisa de mais ajustes? Estamos à disposição!
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 18. COTAÇÃO ACEITA
-        [
-            'name' => 'Cotação Aceita',
-            'trigger_event' => 'quote_accepted',
-            'template' => "⭐ *Cotação Aceita!*
-
-Olá *{cliente}*,
-
-✅ Ótima escolha! Sua cotação foi aceita.
-
-⭕ *Detalhes:*
-▪️ Cotação: *#{numero_cotacao}*
-▪️ Assunto: *{subject_cotacao}*
-▪️ Valor: *{valor_cotacao}*
-▪️ Aceita em: *{data_aceitacao}*
-
-▶️ *Próximos passos:*
-1. Processaremos seu pedido
-2. Ativaremos os serviços
-3. Enviaremos confirmação
-
-⏰ Tempo de ativação: 1-2 horas úteis
-
-⭐ *Obrigado pela confiança!*
-
-{assinatura}",
-            'active' => true
-        ],
-        
-        // 19. SUBSTITUIÇÃO DE EMAIL
-        [
-            'name' => 'Notificação WhatsApp',
-            'trigger_event' => 'email_presend',
-            'template' => "✉️ *Notificação Importante*
-
-Olá *{cliente}*,
-
-⭕ *Assunto:* {assunto}
-
-▪️ *Serviço:* {tipo_servico}
-▪️ *Domínio:* {dominio}
-▪️ *Produto:* {nome_produto}
-
-✔️ *Detalhes:*
-{mensagem}
-
-⚙️ *Informações de acesso:*
-▪️ IP: {ip_dedicado}
-▪️ Usuário: {usuario}
-▪️ Senha: {senha}
-
-ℹ️ Precisa de ajuda? Responda esta mensagem!
-
-{assinatura}",
-            'active' => true
-        ],
-
-        // 20. MENSAGEM DE TESTE
-        [
-            'name' => 'Mensagem de Teste',
-            'trigger_event' => 'test_message',
-            'template' => "⚙️ *Mensagem de Teste*
-
-Olá *{cliente}*,
-
-Esta é uma mensagem de teste do sistema WhatsApp.
-
-✅ *Status:* Sistema funcionando perfeitamente!
-⏰ *Data:* {data_atual}
-⏰ *Hora:* {hora_atual}
-
-⚙️ *Variáveis testadas:*
-▪️ Provedor: {provedor}
-▪️ Assinatura: {assinatura}
-▪️ URL: {url_whmcs}
-
-✔️ Teste concluído com sucesso!
-
-{assinatura}",
-            'active' => true
-        ],
-        // SERVIÇO ATIVADO - HOSPEDAGEM
-    [
-    'name' => 'Hospedagem Ativada',
-    'trigger_event' => 'service_activated_hosting',
-    'template' => "🌐 *Hospedagem Ativada com Sucesso!*
-
-Olá *{cliente}*,
-
-⭐ Sua hospedagem foi ativada e está pronta para uso!
-
-📍 *Detalhes do Serviço:*
-▪️ Plano: *{servico}*
-▪️ Domínio: *{dominio}*
-▪️ Ativado em: *{data_ativacao}*
-
-🔐 *Dados de Acesso:*
-▪️ Painel: cPanel
-▪️ Servidor: {servidor}
-▪️ IP: {ip_servidor}
-
-✅ *Próximos Passos:*
-1. Acesse o cPanel
-2. Configure seus e-mails
-3. Faça upload do seu site
-4. Configure SSL gratuito
-
-➡️ *Acessar painel:*
-{url_whmcs}/clientarea.php?action=productdetails&id={servico_id}
-
-📚 *Precisa de ajuda?*
-Confira nossa base de conhecimento ou abra um ticket!
-
-{assinatura}",
-    'active' => true
-],
-
-// SERVIÇO ATIVADO - REVENDA
-[
-    'name' => 'Revenda Ativada',
-    'trigger_event' => 'service_activated_reseller',
-    'template' => "🏢 *Revenda de Hospedagem Ativada!*
-
-Olá *{cliente}*,
-
-⭐ Seu plano de revenda foi ativado com sucesso!
-
-📍 *Detalhes do Serviço:*
-▪️ Plano: *{servico}*
-▪️ Domínio: *{dominio}*
-▪️ Ativado em: *{data_ativacao}*
-
-🔐 *Painéis de Controle:*
-▪️ WHM: https://{servidor}:2087
-▪️ cPanel: https://{servidor}:2083
-▪️ Servidor: {servidor}
-
-💼 *Recursos Inclusos:*
-▪️ Contas cPanel ilimitadas
-▪️ WHMCS gratuito (se aplicável)
-▪️ SSL gratuito para todos os domínios
-▪️ Suporte técnico prioritário
-
-✅ *Comece Agora:*
-1. Acesse o WHM
-2. Crie suas primeiras contas
-3. Configure pacotes de hospedagem
-4. Integre com seu WHMCS
-
-➡️ *Área do cliente:*
-{url_whmcs}/clientarea.php?action=productdetails&id={servico_id}
-
-📚 *Documentação para Revendedores:*
-Acesse nossa wiki com tutoriais completos!
-
-{assinatura}",
-    'active' => true
-],
-
-// SERVIÇO ATIVADO - VPS/DEDICADO
-[
-    'name' => 'VPS/Dedicado Ativado',
-    'trigger_event' => 'service_activated_vps',
-    'template' => "🖥️ *Servidor Ativado e Pronto!*
-
-Olá *{cliente}*,
-
-⭐ Seu servidor foi provisionado e está online!
-
-📍 *Detalhes do Servidor:*
-▪️ Plano: *{servico}*
-▪️ Hostname: *{dominio}*
-▪️ Ativado em: *{data_ativacao}*
-
-🔐 *Informações de Acesso:*
-▪️ IP Principal: *{ip_servidor}*
-▪️ Sistema: {sistema_operacional}
-▪️ Painel: {painel_controle}
-
-⚙️ *Especificações:*
-▪️ CPU: {cpu_cores} cores
-▪️ RAM: {memoria_ram} GB
-▪️ Disco: {espaco_disco} GB
-▪️ Banda: {banda_mensal}
-
-⚠️ *IMPORTANTE - Segurança:*
-1. Altere a senha root imediatamente
-2. Configure firewall
-3. Ative atualizações automáticas
-4. Configure backups
-
-➡️ *Acessar detalhes:*
-{url_whmcs}/clientarea.php?action=productdetails&id={servico_id}
-
-🛡️ *Suporte Técnico:*
-Nossa equipe está disponível 24/7 para auxiliar!
-
-{assinatura}",
-            'active' => true
-        ],
-// ==========================================
-// ADICIONAR ESTES 4 TEMPLATES NO ARRAY $defaultTemplates
-// LOCALIZAR: Linha 958 (antes do fechamento do array ]);)
-// ADICIONAR: Logo após o template 'VPS/Dedicado Ativado'
-// ==========================================
-
-        // 24. LEMBRETE DE FATURA — 1º
-        [
-            'name' => 'Lembrete de Fatura — 1º',
-            'trigger_event' => 'invoice_reminder_1',
-            'template' => "⏰ *1º Lembrete: Fatura Vencendo em Breve*
-
-Olá *{cliente}*,
-
-⚠️ Vencimento: *{dias_vencimento}, em (*{vencimento}*)
-
-⭕ *Detalhes:*
-▪️ Fatura: *#{numero_fatura}*
-▪️ Valor: *{valor}*
-▪️ Vencimento: *{vencimento}*
-
-⚡ Abaixo o código *PIX copia e cola*:
-{quebrar_mensagem}
-{codigopix}
-{quebrar_mensagem}
-✔️ Vou enviar o *QRCode do Pix*:
-{quebrar_mensagem}
-{qr_code_url}
-{quebrar_mensagem}
-✔️ *Código de barras:*
-{quebrar_mensagem}
-{linhadigitavel}
-{quebrar_mensagem}
-
-➡️ *Acessar fatura:*
-{link_fatura}
-
-✅ Pague em dia e evite juros!
-
-{assinatura}",
-            'active' => true
-        ],
-
-        // 25. LEMBRETE DE FATURA — 2º
-        [
-            'name' => 'Lembrete de Fatura — 2º',
-            'trigger_event' => 'invoice_reminder_2',
-            'template' => "⚠️ *2º Lembrete: Fatura Vence Amanhã!*
-
-Olá *{cliente}*,
-
-⭕ *ATENÇÃO:* Sua fatura vence *amanhã* (*{vencimento}*)
-
-⭕ *Detalhes:*
-▪️ Fatura: *#{numero_fatura}*
-▪️ Valor: *{valor}*
-▪️ Status: Pendente
-
-⚡ Abaixo o código *PIX copia e cola*:
-{quebrar_mensagem}
-{codigopix}
-{quebrar_mensagem}
-✔️ Vou enviar o *QRCode do Pix*:
-{quebrar_mensagem}
-{qr_code_url}
-{quebrar_mensagem}
-✔️ *Código de barras:*
-{quebrar_mensagem}
-{linhadigitavel}
-{quebrar_mensagem}
-
-➡️ *Ver fatura:*
-{link_fatura}
-
-⚫ *Evite:*
-▪️ Suspensão do serviço
-▪️ Juros e multas (2% + 1% ao mês)
-▪️ Interrupção no atendimento
-
-⏰ *Pague hoje e evite transtornos!*
-
-{assinatura}",
-            'active' => true
-        ],
-
-        // 26. LEMBRETE DE FATURA — 3º
-        [
-            'name' => 'Lembrete de Fatura — 3º',
-            'trigger_event' => 'invoice_reminder_3',
-            'template' => "⭕ *3º Lembrete: FATURA VENCIDA!*
-
-Olá *{cliente}*,
-
-❌ Sua fatura está *VENCIDA* desde *{vencimento}*
-
-⭕ *Detalhes:*
-▪️ Fatura: *#{numero_fatura}*
-▪️ Valor original: *{valor}*
-▪️ Dias em atraso: *{dias_vencimento}*
-▪️ Status: *VENCIDA*
-
-⚠️ *IMPORTANTE:*
-Seu serviço pode ser suspenso a qualquer momento!
-
-⚡ Abaixo o código *PIX copia e cola*:
-{quebrar_mensagem}
-{codigopix}
-{quebrar_mensagem}
-✔️ Vou enviar o *QRCode do Pix*:
-{quebrar_mensagem}
-{qr_code_url}
-{quebrar_mensagem}
-✔️ *Código de barras:*
-{quebrar_mensagem}
-{linhadigitavel}
-{quebrar_mensagem}
-
-➡️ *Acessar fatura:*
-{link_fatura}
-
-⚫ *Consequências do não pagamento:*
-▪️ Suspensão imediata do serviço
-▪️ Juros de 2% + 1% ao mês
-▪️ Cancelamento após 15 dias
-▪️ Perda de dados e configurações
-
-☎️ *Dificuldades para pagar?*
-Entre em contato conosco para negociar!
-
-{assinatura}",
-            'active' => true
-        ],
-
-        // 27. SERVIÇO ATIVADO - OUTROS
-        [
-            'name' => 'Outros Serviços Ativados',
-            'trigger_event' => 'service_activated_other',
-            'template' => "⭐ *Serviço Ativado com Sucesso!*
-
-Olá *{cliente}*,
-
-✅ Seu serviço foi ativado e está pronto para uso!
-
-⭕ *Detalhes do Serviço:*
-▪️ Serviço: *{servico}*
-▪️ Domínio: *{dominio}*
-▪️ Ativado em: *{data_ativacao}*
-
-✔️ *Informações de Acesso:*
-▪️ Servidor: {servidor}
-▪️ IP: {ip_dedicado}
-
-✅ *Próximos Passos:*
-1. Acesse o painel de controle
-2. Configure suas preferências
-3. Comece a usar seu serviço!
-
-➡️ *Área do cliente:*
-{url_whmcs}/clientarea.php
-
-ℹ️ *Precisa de ajuda?*
-Nossa equipe está à disposição!
-
-{assinatura}",
-            'active' => true
-        ],
-        // 24. LEMBRETE DE VENCIMENTO (GENÉRICO)
-[
-    'name' => 'Lembrete de Vencimento',
-    'trigger_event' => 'invoice_reminder',
-    'template' => "⏰ *Lembrete: Fatura Vencendo!*
-
-Olá *{cliente}*,
-
-⚠️ Venvimento: *{vencimento}*
-
-⭕ *Detalhes:*
-▪️ Fatura: *#{numero_fatura}*
-▪️ Valor: *{valor}*
-▪️ Dias restantes: {dias_vencimento}
-
-⚡ Abaixo o código *PIX copia e cola*:
-{quebrar_mensagem}
-{codigopix}
-{quebrar_mensagem}
-✔️ Vou enviar o *QRCode do Pix*:
-{quebrar_mensagem}
-{qr_code_url}
-{quebrar_mensagem}
-✔️ *Código de barras:*
-{quebrar_mensagem}
-{linhadigitavel}
-{quebrar_mensagem}
-
-➡️ *Ver fatura:*
-{link_fatura}
-
-⚫ *Evite:*
-▪️ Suspensão do serviço
-▪️ Juros e multas
-▪️ Interrupção no atendimento
-
-{assinatura}",
-            'active' => true
-        ],
-    ];
-    
-    foreach ($defaultTemplates as $template) {
-        // Verifica se template já existe
-        $exists = Capsule::table('mod_zapcel_templates')
-            ->where('trigger_event', $template['trigger_event'])
-            ->exists();
-        
-        // Só insere se NÃO existir
-        if (!$exists) {
-            Capsule::table('mod_zapcel_templates')->insert($template);
-        }
-    }
-}
-
-
-/**
- * Desativação do módulo
- */
-function zapcel_deactivate()
-{
-    // Preserva dados para possível reativação
-    return [
-        'status' => 'success',
-        'description' => 'Zapcel desativado. Dados preservados para reativação futura.'
-    ];
-}
-
-/**
- * Upgrade do módulo
- */
-function zapcel_upgrade($vars)
-{
-    $currentVersion = $vars['version'];
-    
-    try {
-        // Migração da versão 1.x para 2.x
-        if (version_compare($currentVersion, '2.0.0', '<')) {
-            zapcel_migrate_to_v2();
-        }
-        
-        return [
-            'status' => 'success',
-            'description' => 'Zapcel atualizado para a versão ' . $vars['version']
-        ];
-        
-    } catch (Exception $e) {
-        return [
-            'status' => 'error',
-            'description' => 'Erro na atualização: ' . $e->getMessage()
-        ];
-    }
-}
-
-/**
- * Migração para a versão 2.0
- */
-function zapcel_migrate_to_v2()
-{
-    // Migração de dados antigos se necessário
-    // Esta função será implementada conforme a necessidade
-}
-
-/**
- * Output do painel administrativo
- */
-function zapcel_output($vars)
-{
-    // Verifica acesso administrativo
-    if (!isset($_SESSION['adminid'])) {
-        die('Acesso restrito a administradores.');
-    }
-    
-    // Dispatcher para o painel administrativo
-    $action = $_REQUEST['action'] ?? 'dashboard';
-    
-    // CORREÇÃO: Cria o dispatcher apenas uma vez
-    // O require_once já foi feito no início do arquivo
-    $dispatcher = new \WHMCS\Module\Addon\Zapcel\Admin\AdminDispatcher($vars);
-    
-    try {
-        // Se for AJAX, o dispatch() já faz echo e exit
-        // Não precisamos fazer echo aqui
-        if ($action === 'ajax') {
-            $dispatcher->dispatch($action);
-        } else {
-            echo $dispatcher->dispatch($action);
-        }
-    } catch (Exception $e) {
-        if ($action === 'ajax') {
-            header('Content-Type: application/json');
-            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
-        } else {
-            echo '<div class="alert alert-danger">Erro: ' . $e->getMessage() . '</div>';
-        }
-    }
-}
-
-/**
- * Área do cliente
- */
-function zapcel_clientarea($vars)
-{
-    $clientId = $_SESSION['uid'] ?? 0;
-
-    // Carrega as traduções do módulo usando seu sistema existente
-    $moduleLang = [];
-    try {
-        $langSetting = Capsule::table('tbladdonmodules')
-            ->where('module', 'zapcel')
-            ->where('setting', 'language')
-            ->value('value') ?? 'portuguese';
-
-        $langFile = $langSetting === 'english'
-            ? __DIR__ . '/langs/en.php'
-            : __DIR__ . '/langs/pt.php';
-
-        if (file_exists($langFile)) {
-            $moduleLang = include $langFile;
-            if (!is_array($moduleLang)) { 
-                $moduleLang = []; 
-            }
-        }
-    } catch (\Throwable $e) {
-        $moduleLang = [];
-    }
-    
-    if (!$clientId) {
-        return [
-            'pagetitle' => 'Zapcel',
-            'templatefile' => 'client/validacao',
-            'requirelogin' => true,
-            'vars' => [
-                'MODULE_LANG' => $moduleLang
-            ],
-        ];
-    }
-    
-    // Busca configuração
-    $validacaoObrigatoria = Capsule::table('tbladdonmodules')
-        ->where('module', 'zapcel')
-        ->where('setting', 'zapcel_validation')
-        ->value('value');
-    
-    // Se validação obrigatória está ativada
-    if ($validacaoObrigatoria == "1") {
-        
-        // Busca validação do cliente
-        $validacao = Capsule::table('mod_zapcel_validation')
-            ->where('client_id', $clientId)
-            ->first();
-        
-        // Se NÃO validado, mostra página de validação
-        if (!$validacao || $validacao->validated != 1) {
-            
-            // Busca cliente
-            $client = Capsule::table('tblclients')->where('id', $clientId)->first();
-            
-            // Cria registro se não existe
-            if (!$validacao) {
-                Capsule::table('mod_zapcel_validation')->insert([
-                    'client_id' => $clientId,
-                    'phone_number' => $client->phonenumber ?? '',
-                    'verification_code' => '',
-                    'validated' => 0,
-                    'status' => 'pending',
-                    'attempts' => 0,
-                    'created_at' => date('Y-m-d H:i:s'),
-                    'updated_at' => date('Y-m-d H:i:s'),
-                ]);
-                
-                $validacao = Capsule::table('mod_zapcel_validation')->where('client_id', $clientId)->first();
-            }
-            
-            // Processa reset - voltar para enviar novo código
-            if (isset($_GET['reset']) && $_GET['reset'] == '1') {
-                // Limpa o código de verificação no banco para forçar novo envio
-                Capsule::table('mod_zapcel_validation')
-                    ->where('client_id', $clientId)
-                    ->update([
-                        'verification_code' => '',
-                        'status' => 'pending',
-                        'attempts' => 0,
-                        'updated_at' => date('Y-m-d H:i:s')
-                    ]);
-                
-                // Redireciona para a mesma página sem o parâmetro reset
-                header('Location: index.php?m=zapcel');
-                exit();
-            }
-
-            // Processa POST - Enviar código
-            if (isset($_POST['send_code'])) {
-                require_once __DIR__ . '/api/NumberValidator.php';
-                
-                $settings = Capsule::table('tbladdonmodules')
-                    ->where('module', 'zapcel')
-                    ->pluck('value', 'setting')
-                    ->toArray();
-                
-                $validator = new \WHMCS\Module\Addon\Zapcel\Api\NumberValidator($settings);
-
-                // CORREÇÃO: pega o número do campo do formulário
-                $rawPhoneNumber = $_POST['phonenumber'];
-                $phoneNumber = $validator->validatePhoneFormat($rawPhoneNumber);
-
-                // ATUALIZA O NÚMERO NA TABELA DE VALIDAÇÃO
-                Capsule::table('mod_zapcel_validation')
-                    ->where('client_id', $clientId)
-                    ->update(['phone_number' => $phoneNumber]);
-                    
-                $result = $validator->initiateValidation($clientId, $phoneNumber);
-                
-                if ($result['success']) {
-                    $vars['success_message'] = $result['message'];
-                    $validacao = Capsule::table('mod_zapcel_validation')->where('client_id', $clientId)->first();
-                } else {
-                    $vars['error_message'] = $result['error'];
-                }
-            }
-
-            // Processa POST - Validar código
-            if (isset($_POST['validate_code'])) {
-                require_once __DIR__ . '/api/NumberValidator.php';
-                
-                $settings = Capsule::table('tbladdonmodules')
-                    ->where('module', 'zapcel')
-                    ->pluck('value', 'setting')
-                    ->toArray();
-                
-                $validator = new \WHMCS\Module\Addon\Zapcel\Api\NumberValidator($settings);
-                $inputCode = $_POST['code'] ?? '';
-                $result = $validator->verifyCode($clientId, $inputCode);
-                
-                if ($result['success']) {
-                    
-                    // ATUALIZA O NÚMERO NO BANCO APÓS VALIDAÇÃO BEM-SUCEDIDA
-                    $phoneNumber = preg_replace('/^(\+?\d{2})(\d{2})(\d{5})(\d{4})$/', '+$1.$2 $3-$4', preg_replace('/\D+/', '', $_POST['phonenumber']));
-                    Capsule::table('tblclients')
-                        ->where('id', $clientId)
-                        ->update(['phonenumber' => $phoneNumber]);
-                    
-                    // Validado! Redireciona para clientarea
-                    header('Location: clientarea.php');
-                    exit();
-                } else {
-                    $vars['error_message'] = $result['error'];
-                }
-            }
-
-            // Verifica se código expirou (15 minutos)
-            $code_expired = false;
-            if ($validacao && $validacao->status == 'pending' && !empty($validacao->verification_code)) {
-                if (strtotime($validacao->updated_at) < strtotime('-15 minutes')) {
-                    $code_expired = true;
-                }
-            }
-
-            // Recarrega o cliente diretamente da tabela principal (WHMCS)
-            $client = Capsule::table('tblclients')->where('id', $clientId)->first();
-
-            // Retorna página de validação
-            return [
-                'pagetitle' => 'Validação WhatsApp',
-                'breadcrumb' => ['index.php?m=zapcel' => 'Validação WhatsApp'],
-                'templatefile' => 'zapcel_validation',
-                'requirelogin' => true,
-                'vars' => [
-                    'validation' => $validacao,
-                    'client' => $client,
-                    'error_message' => $vars['error_message'] ?? null,
-                    'success_message' => $vars['success_message'] ?? null,
-                    'code_expired' => $code_expired,
-                    'MODULE_LANG' => $moduleLang 
-                ],
-            ];
-            
-            // Processa POST - Validar código
-            if (isset($_POST['validate_code'])) {
-                require_once __DIR__ . '/api/NumberValidator.php';
-                
-                $settings = Capsule::table('tbladdonmodules')
-                    ->where('module', 'zapcel')
-                    ->pluck('value', 'setting')
-                    ->toArray();
-                
-                $validator = new \WHMCS\Module\Addon\Zapcel\Api\NumberValidator($settings);
-                $inputCode = $_POST['code'] ?? '';
-                $result = $validator->verifyCode($clientId, $inputCode);
-                
-                if ($result['success']) {
-
-                    // ATUALIZA O NÚMERO NO BANCO APÓS VALIDAÇÃO BEM-SUCEDIDA
-                    $phoneNumber = preg_replace('/^(\+?\d{2})(\d{2})(\d{5})(\d{4})$/', '+$1.$2 $3-$4', preg_replace('/\D+/', '', $_POST['phonenumber']));
-                    Capsule::table('tblclients')
-                        ->where('id', $clientId)
-                        ->update(['phonenumber' => $phoneNumber]);
-
-                    // Validado! Redireciona para clientarea
-                    header('Location: clientarea.php');
-                    exit();
-                } else {
-                    $vars['error_message'] = $result['error'];
-                }
-            }
-            
-            // Retorna página de validação
-            return [
-                'pagetitle' => 'Validação WhatsApp',
-                'breadcrumb' => ['index.php?m=zapcel' => 'Validação WhatsApp'],
-                'templatefile' => 'zapcel_validation',
-                'requirelogin' => true,
-                'vars' => [
-                    'validation' => $validacao,
-                    'client' => $client,
-                    'MODULE_LANG' => $moduleLang 
-                ],
-            ];
-        }
-    }
-    
-    // Cliente validado ou validação não obrigatória
-    // Mostra página normal do módulo
-    return [
-        'pagetitle' => 'Zapcel - Configurações WhatsApp',
-        'breadcrumb' => ['index.php?m=zapcel' => 'WhatsApp'],
-        'templatefile' => 'client/configuracoes',
-        'requirelogin' => true,
-        'vars' => [
-            'client_id' => $clientId,
-            'MODULE_LANG' => $moduleLang
-        ],
-    ];
-}
-
-/**
- * Obtém número de telefone do cliente
- */
-function zapcel_get_client_phone($vars)
-{
-    $clientId = $_SESSION['uid'];
-    
-    // Tenta obter do campo personalizado se configurado
-    if (!empty($vars['zapcel_phone_source']) && $vars['zapcel_phone_source'] !== 'phonenumber') {
-        $customField = Capsule::table('tblcustomfields')
-            ->where('fieldname', $vars['zapcel_phone_source'])
-            ->first();
-            
-        if ($customField) {
-            $customValue = Capsule::table('tblcustomfieldsvalues')
-                ->where('fieldid', $customField->id)
-                ->where('relid', $clientId)
-                ->first();
-                
-            if ($customValue && !empty($customValue->value)) {
-                return $customValue->value;
-            }
-        }
-    }
-    
-    // Fallback para o campo padrão
-    $client = Capsule::table('tblclients')
-        ->where('id', $clientId)
-        ->first();
-        
-    return $client->phonenumber ?? '';
-}
-
-// CARREGA OS HOOKS DO SISTEMA
-// CRÍTICO: Sem isso, nenhuma mensagem automática é enviada!
-require_once __DIR__ . '/hooks.php'; /// 742 paginas.
+<?php //00507
+// 14.0 82
+if(!extension_loaded('ionCube Loader')){$__oc=strtolower(substr(php_uname(),0,3));$__ln='ioncube_loader_'.$__oc.'_'.substr(phpversion(),0,3).(($__oc=='win')?'.dll':'.so');if(function_exists('dl')){@dl($__ln);}if(function_exists('_il_exec')){return _il_exec();}$__ln='/ioncube/'.$__ln;$__oid=$__id=realpath(ini_get('extension_dir'));$__here=dirname(__FILE__);if(strlen($__id)>1&&$__id[1]==':'){$__id=str_replace('\\','/',substr($__id,2));$__here=str_replace('\\','/',substr($__here,2));}$__rd=str_repeat('/..',substr_count($__id,'/')).$__here.'/';$__i=strlen($__rd);while($__i--){if($__rd[$__i]=='/'){$__lp=substr($__rd,0,$__i).$__ln;if(file_exists($__oid.$__lp)){$__ln=$__lp;break;}}}if(function_exists('dl')){@dl($__ln);}}else{die('The file '.__FILE__." is corrupted.\n");}if(function_exists('_il_exec')){return _il_exec();}echo("Site error: the ".(php_sapi_name()=='cli'?'ionCube':'<a href="http://www.ioncube.com">ionCube</a>')." PHP Loader needs to be installed. This is a widely used PHP extension for running ionCube protected PHP code, website security and malware blocking.\n\nPlease visit ".(php_sapi_name()=='cli'?'get-loader.ioncube.com':'<a href="http://get-loader.ioncube.com">get-loader.ioncube.com</a>')." for install assistance.\n\n");exit(199);
+
+?>
+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

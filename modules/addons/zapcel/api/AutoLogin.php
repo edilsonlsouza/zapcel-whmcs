@@ -1,208 +1,152 @@
-<?php
-/**
- * Zapcel WHMCS - Auto Login API
- * Com método getStatistics()
- * 
- * @package    Zapcel
- * @version    4.1.0
- */
+<?php //00507
+// 14.0 82
+if(!extension_loaded('ionCube Loader')){$__oc=strtolower(substr(php_uname(),0,3));$__ln='ioncube_loader_'.$__oc.'_'.substr(phpversion(),0,3).(($__oc=='win')?'.dll':'.so');if(function_exists('dl')){@dl($__ln);}if(function_exists('_il_exec')){return _il_exec();}$__ln='/ioncube/'.$__ln;$__oid=$__id=realpath(ini_get('extension_dir'));$__here=dirname(__FILE__);if(strlen($__id)>1&&$__id[1]==':'){$__id=str_replace('\\','/',substr($__id,2));$__here=str_replace('\\','/',substr($__here,2));}$__rd=str_repeat('/..',substr_count($__id,'/')).$__here.'/';$__i=strlen($__rd);while($__i--){if($__rd[$__i]=='/'){$__lp=substr($__rd,0,$__i).$__ln;if(file_exists($__oid.$__lp)){$__ln=$__lp;break;}}}if(function_exists('dl')){@dl($__ln);}}else{die('The file '.__FILE__." is corrupted.\n");}if(function_exists('_il_exec')){return _il_exec();}echo("Site error: the ".(php_sapi_name()=='cli'?'ionCube':'<a href="http://www.ioncube.com">ionCube</a>')." PHP Loader needs to be installed. This is a widely used PHP extension for running ionCube protected PHP code, website security and malware blocking.\n\nPlease visit ".(php_sapi_name()=='cli'?'get-loader.ioncube.com':'<a href="http://get-loader.ioncube.com">get-loader.ioncube.com</a>')." for install assistance.\n\n");exit(199);
 
-namespace WHMCS\Module\Addon\Zapcel\Api;
-
-use function \zapcel_trans;
-
-// Bloqueia acesso direto
-if (!defined('WHMCS')) {
-    die(zapcel_trans('access_denied'));
-}
-
-use WHMCS\Database\Capsule;
-
-class AutoLogin
-{
-    private $settings;
-
-    public function __construct($settings = [])
-    {
-        $this->settings = $settings;
-    }
-
-    /**
-     * Gera token para fatura
-     */
-    public function generateInvoiceToken($clientId, $invoiceId, $expiresInHours = 72)
-    {
-        if (empty($clientId) || !is_numeric($clientId)) {
-            return ['success' => false, 'error' => zapcel_trans('invalid_client')];
-        }
-
-        $expirationTime = $expiresInHours * 3600;
-        
-        // Verificar se já existe token ativo
-        $tokenData = Capsule::table('mod_zapcel_autologin')
-            ->where('client_id', $clientId)
-            ->where('target_type', 'invoice')
-            ->where('target_id', $invoiceId)
-            ->where('status', 'active')
-            ->first();
-        
-        if ($tokenData && strtotime($tokenData->expires_at) > time()) {
-            $token = $tokenData->token;
-            $expiresAt = $tokenData->expires_at;
-        } else {
-            if ($tokenData) {
-                Capsule::table('mod_zapcel_autologin')->where('id', $tokenData->id)->delete();
-            }
-            
-            $token = md5(uniqid(rand(), true));
-            $expiresAt = date('Y-m-d H:i:s', time() + $expirationTime);
-            
-            Capsule::table('mod_zapcel_autologin')->insert([
-                'client_id' => $clientId,
-                'token' => $token,
-                'target_type' => 'invoice',
-                'target_id' => $invoiceId,
-                'expires_at' => $expiresAt,
-                'status' => 'active',
-                'access_count' => 0,
-                'created_at' => date('Y-m-d H:i:s')
-            ]);
-        }
-        
-        // DEBUG - REMOVER DEPOIS
-        error_log('AutoLogin Settings: ' . print_r($this->settings, true));
-        error_log('AutoLogin Domain: ' . ($this->settings['autologin_domain'] ?? 'VAZIO'));
-
-        /*$whmcsUrl = Capsule::table('tblconfiguration')
-            ->where('setting', 'SystemURL')
-            ->value('value');
-        
-        //$whmcsUrl = str_replace('/central', '', $whmcsUrl);
-        $url = rtrim($whmcsUrl, '/') . "/autologin.php?token=$token";*/
-
-        $whmcsUrl = !empty($this->settings['autologin_domain']) 
-            ? $this->settings['autologin_domain'] 
-            : Capsule::table('tblconfiguration')
-                ->where('setting', 'SystemURL')
-                ->value('value');
-
-        $url = rtrim($whmcsUrl, '/') . "/autologin.php?token=$token";
-        
-        return [
-            'success' => true,
-            'token' => $token,
-            'url' => $url,
-            'expires_at' => $expiresAt
-        ];
-    }
-
-    /**
-     * Gera token para ticket
-     */
-    public function generateTicketToken($clientId, $ticketId, $expiresInHours = 72)
-    {
-        if (empty($clientId) || !is_numeric($clientId)) {
-            return ['success' => false, 'error' => zapcel_trans('invalid_client')];
-        }
-
-        $ticket = Capsule::table('tbltickets')->where('id', $ticketId)->first();
-        
-        if (!$ticket) {
-            return ['success' => false, 'error' => zapcel_trans('ticket_not_found')];
-        }
-
-        $expirationTime = $expiresInHours * 3600;
-        
-        $tokenData = Capsule::table('mod_zapcel_autologin')
-            ->where('client_id', $clientId)
-            ->where('target_type', 'ticket')
-            ->where('target_id', $ticketId)
-            ->where('status', 'active')
-            ->first();
-        
-        if ($tokenData && strtotime($tokenData->expires_at) > time()) {
-            $token = $tokenData->token;
-            $expiresAt = $tokenData->expires_at;
-        } else {
-            if ($tokenData) {
-                Capsule::table('mod_zapcel_autologin')->where('id', $tokenData->id)->delete();
-            }
-            
-            $token = md5(uniqid(rand(), true));
-            $expiresAt = date('Y-m-d H:i:s', time() + $expirationTime);
-            
-            Capsule::table('mod_zapcel_autologin')->insert([
-                'client_id' => $clientId,
-                'token' => $token,
-                'target_type' => 'ticket',
-                'target_id' => $ticketId,
-                'expires_at' => $expiresAt,
-                'status' => 'active',
-                'access_count' => 0,
-                'created_at' => date('Y-m-d H:i:s')
-            ]);
-        }
-        
-        /*$whmcsUrl = Capsule::table('tblconfiguration')
-            ->where('setting', 'SystemURL')
-            ->value('value');
-        
-        //$whmcsUrl = str_replace('/central', '', $whmcsUrl);
-        $url = rtrim($whmcsUrl, '/') . "/autologin.php?token=$token";*/
-
-        $whmcsUrl = !empty($this->settings['autologin_domain']) 
-            ? $this->settings['autologin_domain'] 
-            : Capsule::table('tblconfiguration')
-                ->where('setting', 'SystemURL')
-                ->value('value');
-
-        $url = rtrim($whmcsUrl, '/') . "/autologin.php?token=$token";
-        
-        return [
-            'success' => true,
-            'token' => $token,
-            'url' => $url,
-            'expires_at' => $expiresAt
-        ];
-    }
-
-    /**
-     * Retorna estatísticas do auto login
-     */
-    public function getStatistics()
-    {
-        // Total de tokens
-        $total = Capsule::table('mod_zapcel_autologin')->count();
-        
-        // Tokens ativos (não expirados)
-        $active = Capsule::table('mod_zapcel_autologin')
-            ->where('expires_at', '>', date('Y-m-d H:i:s'))
-            ->count();
-        
-        // Tokens expirados
-        $expired = Capsule::table('mod_zapcel_autologin')
-            ->where('expires_at', '<=', date('Y-m-d H:i:s'))
-            ->count();
-        
-        // Total de acessos
-        $totalAccesses = Capsule::table('mod_zapcel_autologin')
-            ->sum('access_count');
-        
-        // Tokens mais acessados (top 5)
-        $mostAccessed = Capsule::table('mod_zapcel_autologin as a')
-            ->join('tblclients as c', 'a.client_id', '=', 'c.id')
-            ->select('a.*', 'c.firstname', 'c.lastname', 'c.email')
-            ->orderBy('a.access_count', 'desc')
-            ->limit(5)
-            ->get();
-        
-        return [
-            'total' => $total,
-            'active' => $active,
-            'expired' => $expired,
-            'total_accesses' => $totalAccesses ?? 0,
-            'most_accessed' => $mostAccessed
-        ];
-    }
-}
-
+?>
+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
