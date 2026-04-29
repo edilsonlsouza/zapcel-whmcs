@@ -12,32 +12,6 @@
                     "variable_name": "link_ios"
                 }
             ]
-        },
-        {
-            "packageid": 49,
-            "fields": [
-                {
-                    "fieldid": 332,
-                    "variable_name": "link_android_cloud"
-                },
-                {
-                    "fieldid": 333,
-                    "variable_name": "link_ios_cloud"
-                }
-            ]
-        },
-        {
-            "packageid": 50,
-            "fields": [
-                {
-                    "fieldid": 341,
-                    "variable_name": "link_android_local"
-                },
-                {
-                    "fieldid": 342,
-                    "variable_name": "link_ios_local"
-                }
-            ]
         }
     ]
 }

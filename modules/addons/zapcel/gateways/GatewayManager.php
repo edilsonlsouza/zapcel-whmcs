@@ -1,281 +1,192 @@
-<?php
-namespace WHMCS\Module\Addon\Zapcel\Gateways;
+<?php //00507
+// 13.0 81
+if(!extension_loaded('ionCube Loader')){$__oc=strtolower(substr(php_uname(),0,3));$__ln='ioncube_loader_'.$__oc.'_'.substr(phpversion(),0,3).(($__oc=='win')?'.dll':'.so');if(function_exists('dl')){@dl($__ln);}if(function_exists('_il_exec')){return _il_exec();}$__ln='/ioncube/'.$__ln;$__oid=$__id=realpath(ini_get('extension_dir'));$__here=dirname(__FILE__);if(strlen($__id)>1&&$__id[1]==':'){$__id=str_replace('\\','/',substr($__id,2));$__here=str_replace('\\','/',substr($__here,2));}$__rd=str_repeat('/..',substr_count($__id,'/')).$__here.'/';$__i=strlen($__rd);while($__i--){if($__rd[$__i]=='/'){$__lp=substr($__rd,0,$__i).$__ln;if(file_exists($__oid.$__lp)){$__ln=$__lp;break;}}}if(function_exists('dl')){@dl($__ln);}}else{die('The file '.__FILE__." is corrupted.\n");}if(function_exists('_il_exec')){return _il_exec();}echo("Site error: the ".(php_sapi_name()=='cli'?'ionCube':'<a href="http://www.ioncube.com">ionCube</a>')." PHP Loader needs to be installed. This is a widely used PHP extension for running ionCube protected PHP code, website security and malware blocking.\n\nPlease visit ".(php_sapi_name()=='cli'?'get-loader.ioncube.com':'<a href="http://get-loader.ioncube.com">get-loader.ioncube.com</a>')." for install assistance.\n\n");exit(199);
 
-use WHMCS\Database\Capsule;
-
-class GatewayManager
-{
-    private $gateways = [];
-    
-    public function __construct()
-    {
-        $this->loadGateways();
-    }
-    
-    private function loadGateways()
-    {
-        $gatewaysPath = __DIR__;
-        $files = glob($gatewaysPath . '/*Gateway.php');
-        
-        // DEBUG: Log dos arquivos encontrados
-        $this->logDebug('loadGateways', 'Arquivos encontrados', ['files' => $files]);
-        
-        foreach ($files as $file) {
-            $gatewayName = basename($file, 'Gateway.php');
-            
-            // Ignora arquivos base
-            if (in_array($gatewayName, ['Abstract', 'GatewayInterface', 'GatewayManager'])) {
-                continue;
-            }
-            
-            $className = "WHMCS\\Module\\Addon\\Zapcel\\Gateways\\{$gatewayName}Gateway";
-            
-            $this->logDebug('loadGateways', 'Tentando carregar gateway', [
-                'file' => $file,
-                'gatewayName' => $gatewayName,
-                'className' => $className
-            ]);
-            
-            // VERIFICA SE CLASSE JÁ EXISTE ANTES DE INCLUIR
-            if (!class_exists($className)) {
-                if (file_exists($file)) {
-                    require_once $file;
-                    $this->logDebug('loadGateways', 'Arquivo incluído manualmente', ['file' => $file]);
-                }
-            }
-            
-            if (class_exists($className)) {
-                $gateway = new $className();
-                if ($gateway instanceof GatewayInterface) {
-                    $this->gateways[$gateway->getGatewayId()] = $gateway;
-                    $this->logDebug('loadGateways', 'Gateway carregado com sucesso', [
-                        'gatewayId' => $gateway->getGatewayId(),
-                        'gatewayName' => $gateway->getGatewayName()
-                    ]);
-                }
-            } else {
-                $this->logDebug('loadGateways', 'Classe não existe', ['className' => $className]);
-            }
-        }
-        
-        $this->logDebug('loadGateways', 'Gateways carregados', [
-            'total' => count($this->gateways),
-            'gateways' => array_keys($this->gateways)
-        ]);
-    }
-    
-    public function getAvailableGateways(): array
-    {
-        return $this->gateways;
-    }
-    
-    public function getGateway($gatewayId): ?GatewayInterface
-    {
-        $gateway = $this->gateways[$gatewayId] ?? null;
-        $this->logDebug('getGateway', 'Buscando gateway', [
-            'gatewayId' => $gatewayId,
-            'found' => !is_null($gateway),
-            'available' => array_keys($this->gateways)
-        ]);
-        return $gateway;
-    }
-    
-    /**
-     * Detecta automaticamente o gateway usado na fatura
-     */
-    public function getActiveGatewayForInvoice($invoiceId): ?GatewayInterface
-    {
-        $this->logDebug('getActiveGatewayForInvoice', 'Iniciando detecção', ['invoice_id' => $invoiceId]);
-        
-        $invoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->first();
-        if (!$invoice) {
-            $this->logDebug('getActiveGatewayForInvoice', 'Fatura não encontrada', ['invoice_id' => $invoiceId]);
-            return null;
-        }
-        
-        $paymentMethod = $invoice->paymentmethod;
-        $this->logDebug('getActiveGatewayForInvoice', 'Payment method da fatura', [
-            'invoice_id' => $invoiceId,
-            'payment_method' => $paymentMethod
-        ]);
-        
-        $gateway = $this->getGateway($paymentMethod);
-        
-        // Se não encontrou pelo ID exato, tenta mapeamento
-        if (!$gateway) {
-            $this->logDebug('getActiveGatewayForInvoice', 'Gateway não encontrado pelo ID exato, tentando mapeamento');
-            $gateway = $this->findGatewayByAlias($paymentMethod);
-        }
-        
-        $result = $gateway && $gateway->isConfigured() ? $gateway : null;
-        
-        $this->logDebug('getActiveGatewayForInvoice', 'Resultado final', [
-            'invoice_id' => $invoiceId,
-            'payment_method' => $paymentMethod,
-            'gateway_found' => !is_null($result),
-            'gateway' => $result ? $result->getGatewayId() : 'none',
-            'gateway_configured' => $result ? $result->isConfigured() : false
-        ]);
-        
-        return $result;
-    }
-    
-    /**
-     * Mapeia gateways do WHMCS para seus equivalentes
-     */
-    private function findGatewayByAlias($whmcsGateway): ?GatewayInterface
-    {
-        $aliasMap = [
-            'iugupix' => 'iugupix',
-            'iuguboleto' => 'iugupix',
-            'iugu' => 'iugupix',
-            'paghiperpix' => 'paghiper',
-            'paghiperboleto' => 'paghiper',
-            'mercadopago' => 'mercadopago',
-        ];
-        
-        $gatewayId = $aliasMap[$whmcsGateway] ?? $whmcsGateway;
-        
-        $this->logDebug('findGatewayByAlias', 'Mapeamento', [
-            'whmcs_gateway' => $whmcsGateway,
-            'mapped_to' => $gatewayId
-        ]);
-        
-        return $this->getGateway($gatewayId);
-    }
-    
-    /**
-     * Extrai dados de pagamento de forma dinâmica para qualquer gateway
-    */
-    public function extractPaymentData($invoiceId): array
-    {
-        $this->logDebug('extractPaymentData', 'Iniciando extração', ['invoice_id' => $invoiceId]);
-        
-        $data = [
-            'pix_code' => '',
-            'pix_qrcode' => '',
-            'barcode' => '',
-            'pdf_url' => '',
-            'gateway' => 'unknown',
-            'success' => false
-        ];
-        
-        $gateway = $this->getActiveGatewayForInvoice($invoiceId);
-        
-        if (!$gateway) {
-            $this->logDebug('extractPaymentData', 'Nenhum gateway ativo encontrado', ['invoice_id' => $invoiceId]);
-            return $data;
-        }
-        
-        $data['gateway'] = $gateway->getGatewayId();
-        $data['gateway_name'] = $gateway->getGatewayName();
-        
-        $this->logDebug('extractPaymentData', 'Gateway selecionado', [
-            'gateway' => $data['gateway'],
-            'gateway_name' => $data['gateway_name']
-        ]);
-        
-        // Tenta extrair dados PIX
-        try {
-            $this->logDebug('extractPaymentData', 'Chamando extractPixData', ['invoice_id' => $invoiceId]);
-            $pixData = $gateway->extractPixData($invoiceId);
-            
-            $this->logDebug('extractPaymentData', 'Resposta extractPixData', [
-                'success' => $pixData['success'] ?? false,
-                'pix_data_structure' => $pixData ? array_keys($pixData) : []
-            ]);
-            
-            if ($pixData && ($pixData['success'] ?? false)) {
-                if (isset($pixData['pix']['codigo_pix'])) {
-                    $data['pix_code'] = $pixData['pix']['codigo_pix'];
-                    $data['pix_qrcode'] = $pixData['pix']['qr_code'] ?? '';
-                    $data['success'] = true;
-                    
-                    $this->logDebug('extractPaymentData', 'Dados PIX extraídos', [
-                        'pix_code_length' => strlen($data['pix_code']),
-                        'pix_qrcode_exists' => !empty($data['pix_qrcode'])
-                    ]);
-                } 
-                // Fallback para estrutura alternativa
-                elseif (isset($pixData['codigo_pix'])) {
-                    $data['pix_code'] = $pixData['codigo_pix'];
-                    $data['pix_qrcode'] = $pixData['qrcode'] ?? '';
-                    $data['success'] = true;
-                }
-            }
-        } catch (\Exception $e) {
-            $this->logDebug('extractPaymentData', 'ERRO ao extrair PIX', [
-                'error' => $e->getMessage()
-            ]);
-        }
-        
-        // Tenta extrair dados Boleto
-        try {
-            $this->logDebug('extractPaymentData', 'Chamando extractBoletoData', ['invoice_id' => $invoiceId]);
-            $boletoData = $gateway->extractBoletoData($invoiceId);
-            
-            if ($boletoData && ($boletoData['success'] ?? false)) {
-                if (isset($boletoData['boleto']['codigo_barras'])) {
-                    $data['barcode'] = $boletoData['boleto']['codigo_barras'];
-                    $data['pdf_url'] = $boletoData['boleto']['url_pdf'] ?? '';
-                    $data['success'] = true;
-                }
-                // Fallback para estrutura alternativa
-                elseif (isset($boletoData['barcode'])) {
-                    $data['barcode'] = $boletoData['barcode'];
-                    $data['pdf_url'] = $boletoData['pdf_url'] ?? '';
-                    $data['success'] = true;
-                }
-            }
-        } catch (\Exception $e) {
-            $this->logDebug('extractPaymentData', 'ERRO ao extrair Boleto', [
-                'error' => $e->getMessage()
-            ]);
-        }
-        
-        $this->logDebug('extractPaymentData', 'Resultado final', [
-            'invoice_id' => $invoiceId,
-            'pix_code' => !empty($data['pix_code']) ? 'EXISTE' : 'VAZIO',
-            'pix_qrcode' => !empty($data['pix_qrcode']) ? 'EXISTE' : 'VAZIO',
-            'barcode' => !empty($data['barcode']) ? 'EXISTE' : 'VAZIO',
-            'success' => $data['success']
-        ]);
-        
-        return $data;
-    }
-    
-    /**
-     * Lista gateways configurados e ativos
-     */
-    public function getConfiguredGateways(): array
-    {
-        $configured = [];
-        
-        foreach ($this->gateways as $gatewayId => $gateway) {
-            if ($gateway->isConfigured()) {
-                $configured[$gatewayId] = $gateway->getGatewayName();
-            }
-        }
-        
-        return $configured;
-    }
-    
-    /**
-     * Log de debug
-     */
-    private function logDebug($method, $message, $data = [])
-    {
-        try {
-            Capsule::table('mod_zapcel_logs')->insert([
-                'event_type' => 'gateway_manager_debug',
-                'message' => "[GatewayManager] {$method}: {$message}",
-                'details' => json_encode($data),
-                'success' => true,
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s'),
-            ]);
-        } catch (\Exception $e) {
-            // Silencia erros de log
-        }
-    }
-}
+?>
+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
+xcp41tgk53hVtm==

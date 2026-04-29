@@ -1,1306 +1,623 @@
-<?php
-namespace WHMCS\Module\Addon\Zapcel\Api;
+<?php //00507
+// 13.0 81
+if(!extension_loaded('ionCube Loader')){$__oc=strtolower(substr(php_uname(),0,3));$__ln='ioncube_loader_'.$__oc.'_'.substr(phpversion(),0,3).(($__oc=='win')?'.dll':'.so');if(function_exists('dl')){@dl($__ln);}if(function_exists('_il_exec')){return _il_exec();}$__ln='/ioncube/'.$__ln;$__oid=$__id=realpath(ini_get('extension_dir'));$__here=dirname(__FILE__);if(strlen($__id)>1&&$__id[1]==':'){$__id=str_replace('\\','/',substr($__id,2));$__here=str_replace('\\','/',substr($__here,2));}$__rd=str_repeat('/..',substr_count($__id,'/')).$__here.'/';$__i=strlen($__rd);while($__i--){if($__rd[$__i]=='/'){$__lp=substr($__rd,0,$__i).$__ln;if(file_exists($__oid.$__lp)){$__ln=$__lp;break;}}}if(function_exists('dl')){@dl($__ln);}}else{die('The file '.__FILE__." is corrupted.\n");}if(function_exists('_il_exec')){return _il_exec();}echo("Site error: the ".(php_sapi_name()=='cli'?'ionCube':'<a href="http://www.ioncube.com">ionCube</a>')." PHP Loader needs to be installed. This is a widely used PHP extension for running ionCube protected PHP code, website security and malware blocking.\n\nPlease visit ".(php_sapi_name()=='cli'?'get-loader.ioncube.com':'<a href="http://get-loader.ioncube.com">get-loader.ioncube.com</a>')." for install assistance.\n\n");exit(199);
 
-/**
- * Zapcel WHMCS - Classe de Integração WhatsApp API
- * Integração profissional com a API do Zapcel
- * 
- * @package    Zapcel
- * @author     Hostcel
- * @version    2.1.0
- */
-
-// Bloqueia acesso direto
-if (!defined('WHMCS')) {
-    die('Acesso não autorizado.');
-}
-
-/**
- * Classe principal de integração com a API WhatsApp
- */
-class WhatsAppAPI
-{
-    /**
-     * @var array Configurações do módulo
-     */
-    private $settings;
-
-    /**
-     * @var array URLs de QR Code identificadas por índice
-     */
-    private $qrCodeUrls = [];
-
-    /**
-     * @var array Mensagens processadas para referência
-     */
-    private $processedMessages = [];
-    
-    /**
-     * @var string URL base da API
-     */
-    private $apiBaseUrl = 'https://zap.hostcel.com.br/api';
-    
-    /**
-     * @var int Timeout para requisições
-     */
-    private $timeout = 30;
-    
-    /**
-     * @var array Headers padrão
-     */
-    private $defaultHeaders = [
-        'Content-Type: application/x-www-form-urlencoded',
-        'User-Agent: Zapcel-WHMCS/2.1.0'
-    ];
-
-    /**
-     * Construtor
-     * 
-     * @param array $settings Configurações do módulo
-     */
-    public function __construct(array $settings)
-    {
-        $this->settings = $settings;
-        
-        // Aplica configurações de tentativas e delay
-        $this->maxAttempts = (int)($settings['max_attempts'] ?? 3);
-        $this->messageDelay = (int)($settings['message_delay'] ?? 2);
-    }
-
-    /**
-     * Envia mensagem de texto com suporte a partes separadas e detecção automática de QR Code
-     * 
-     * @param string $phoneNumber Número de telefone (formato internacional)
-     * @param string|array $message Mensagem a ser enviada (string ou array de partes)
-     * @param array $options Opções adicionais
-     * @return array Resultado do envio
-     */
-    public function sendMessage(string $phoneNumber, $message, array $options = []): array
-    {
-        try {
-            // Valida parâmetros básicos
-            $validation = $this->validateSendParameters($phoneNumber, is_array($message) ? implode(' ', $message) : $message);
-            if (!$validation['success']) {
-                return $validation;
-            }
-
-            // Processa a mensagem - se já for array, usa como está
-            if (is_array($message)) {
-                $processedMessages = $message;
-            } else {
-                $processedMessages = $this->processMessageForSending($message);
-            }
-            
-            // ✅ Armazena as mensagens processadas para referência
-            $this->processedMessages = $processedMessages;
-            
-            // Usa configurações do módulo para retry e delay
-            $maxAttempts = $this->maxAttempts;
-            $messageDelay = $this->messageDelay;
-            
-            $results = [];
-            $allSuccess = true;
-            $messageIds = [];
-            
-            $this->logDebug('sendMessage', 'Iniciando envio SEQUENCIAL de mensagem com partes', [
-                'phone' => substr($phoneNumber, 0, 6) . '...',
-                'parts_count' => count($processedMessages),
-                'max_attempts' => $maxAttempts,
-                'message_delay' => $messageDelay,
-                'qr_codes_to_send' => count($this->qrCodeUrls)
-            ]);
-            
-            // ✅ ENVIO SEQUENCIAL: Garante que cada mensagem seja enviada e processada antes da próxima
-            foreach ($processedMessages as $index => $messagePart) {
-                
-                // ✅ DETECÇÃO AUTOMÁTICA DE QR CODE (usando índice atual)
-                $isQRCode = $this->isQRCodeMessage($messagePart, $index, $processedMessages);
-                
-                if ($isQRCode) {
-                    $this->logDebug('sendMessage', 'Enviando QR Code como imagem (parte ' . ($index + 1) . ')', [
-                        'part_index' => $index,
-                        'total_parts' => count($processedMessages)
-                    ]);
-                    
-                    // Envia via endpoint de mídia para QR Code
-                    $result = $this->sendQRCodeAsImage($phoneNumber, $messagePart, $maxAttempts);
-                } else {
-                    $this->logDebug('sendMessage', 'Enviando mensagem de texto (parte ' . ($index + 1) . ')', [
-                        'part_index' => $index,
-                        'total_parts' => count($processedMessages),
-                        'text_preview' => substr($messagePart, 0, 50) . '...'
-                    ]);
-                    
-                    // Envia como mensagem de texto normal
-                    $payload = $this->buildTextPayload($phoneNumber, $messagePart);
-                    $result = $this->sendWithRetry('/send', $payload, $maxAttempts);
-                }
-                
-                // ✅ AGUARDA RESULTADO ANTES DE CONTINUAR
-                if ($result['success']) {
-                    // Armazena ID da mensagem se disponível
-                    if (!empty($result['message_id'])) {
-                        $messageIds[] = $result['message_id'];
-                    }
-                    
-                    $this->logDebug('sendMessage', 'Mensagem parte ' . ($index + 1) . ' enviada com sucesso', [
-                        'type' => $isQRCode ? 'media' : 'text',
-                        'message_id' => $result['message_id'] ?? null
-                    ]);
-                } else {
-                    $this->logError('Falha ao enviar parte ' . ($index + 1) . ': ' . ($result['error'] ?? 'Erro desconhecido'));
-                }
-                
-                $results[] = [
-                    'part' => $index + 1,
-                    'success' => $result['success'] ?? false,
-                    'type' => $isQRCode ? 'media' : 'text',
-                    'message_id' => $result['message_id'] ?? null,
-                    'error' => $result['error'] ?? null,
-                    'data' => $result['data'] ?? null,  // ✅ ADICIONA DADOS COMPLETOS DA API
-                    'http_code' => $result['http_code'] ?? null  // ✅ ADICIONA HTTP CODE
-                ];
-                
-                if (!($result['success'] ?? false)) {
-                    $allSuccess = false;
-                    
-                    // Se uma parte falhar, podemos optar por continuar ou parar
-                    $continueOnFailure = $options['continue_on_failure'] ?? true;
-                    if (!$continueOnFailure) {
-                        $this->logError('Parando envio devido a falha na parte ' . ($index + 1));
-                        break; // Para o envio se uma parte falhar
-                    }
-                }
-                
-                // ✅ PAUSA ENTRE MENSAGENS (mesmo após imagens)
-                if ($index < count($processedMessages) - 1 && $messageDelay > 0) {
-                    $this->logDebug('sendMessage', 'Aguardando delay entre mensagens', [
-                        'delay_seconds' => $messageDelay,
-                        'current_part' => $index + 1,
-                        'total_parts' => count($processedMessages)
-                    ]);
-                    sleep($messageDelay);
-                }
-            }
-            
-            $finalResult = [
-                'success' => $allSuccess,
-                'results' => $results,
-                'message_parts' => count($processedMessages),
-                'message_ids' => $messageIds,
-                'used_settings' => [
-                    'max_attempts' => $maxAttempts,
-                    'message_delay' => $messageDelay
-                ]
-            ];
-            
-            $this->logDebug('sendMessage', 'Envio sequencial concluído', [
-                'success' => $allSuccess,
-                'parts_sent' => count(array_filter($results, function($r) { return $r['success']; })),
-                'total_parts' => count($processedMessages),
-                'media_parts' => count(array_filter($results, function($r) { return $r['type'] === 'media'; }))
-            ]);
-            
-            return $finalResult;
-            
-        } catch (\Exception $e) {
-            $this->logError('sendMessage Exception: ' . $e->getMessage());
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Detecta se a mensagem deve ser enviada como mídia (QR Code)
-     * 
-     * @param string $messagePart Parte da mensagem
-     * @param int $index Índice da parte atual
-     * @param array $allParts Todas as partes da mensagem
-     * @return bool True se é QR Code
-     */
-    private function isQRCodeMessage(string $messagePart, int $index, array $allParts): bool
-    {
-        // ✅ FALLBACK SIMPLES: Garante que é string
-        if (!is_string($messagePart)) {
-            $messagePart = '';
-        }
-        
-        // ✅ DETECÇÃO SIMPLES: Apenas verifica se contém {qr_code_url}
-        $hasQRCodeVariable = (strpos($messagePart, '{qr_code_url}') !== false);
-        
-        if ($hasQRCodeVariable) {
-            $this->logDebug('isQRCodeMessage', 'QR Code detectado - contém {qr_code_url}', [
-                'part_index' => $index,
-                'part_content' => trim($messagePart)
-            ]);
-            return true;
-        }
-        
-        return false;
-    }
-
-    /**
-     * Envia QR Code como imagem via endpoint de mídia
-     * 
-     * @param string $phoneNumber Número de telefone
-     * @param string $messagePart Parte da mensagem com {qr_code_url}
-     * @param int $maxAttempts Número máximo de tentativas
-     * @return array Resultado do envio
-     */
-    private function sendQRCodeAsImage(string $phoneNumber, string $messagePart, int $maxAttempts): array
-    {
-        try {
-            $startTime = microtime(true);
-            $this->logDebug('sendQRCodeAsImage', 'INICIANDO envio de QR Code como imagem', [
-                'message_part_preview' => substr($messagePart, 0, 150),
-                'max_attempts' => $maxAttempts
-            ]);
-            
-            // ✅ EXTRAI a URL do QR Code
-            $qrCodeUrl = $this->extractQRCodeUrlFromVariable($messagePart);
-            
-            $this->logDebug('sendQRCodeAsImage', 'Resultado da extração', [
-                'qr_code_url_found' => !empty($qrCodeUrl),
-                'qr_code_url' => $qrCodeUrl
-            ]);
-            
-            if (empty($qrCodeUrl)) {
-                $this->logError('URL do QR Code não encontrada na variável {qr_code_url}');
-                return [
-                    'success' => false,
-                    'error' => 'URL do QR Code não encontrada na variável {qr_code_url}',
-                    'code' => 'QRCODE_URL_NOT_FOUND'
-                ];
-            }
-            
-            // ✅ CORREÇÃO: Garante que a URL do QR Code tenha extensão
-            $processedQrCodeUrl = $this->ensureImageUrlHasExtension($qrCodeUrl);
-            
-            $this->logDebug('sendQRCodeAsImage', 'Enviando QR Code como imagem', [
-                'original_url' => $qrCodeUrl,
-                'processed_url' => $processedQrCodeUrl,
-                'phone' => substr($phoneNumber, 0, 6) . '...'
-            ]);
-            
-            // Envia via endpoint de mídia com URL processada
-            // Usa legenda específica para QR Code PIX
-            $result = $this->sendImage($phoneNumber, $processedQrCodeUrl, 'QR Code PIX - Pagamento Instantâneo');
-
-            $this->logDebug('sendQRCodeAsImage', 'FINALIZANDO envio de QR Code', [
-                'success' => $result['success'] ?? false,
-                'time_taken' => round((microtime(true) - $startTime), 2) . 's'
-            ]);
-            
-            return $result;
-            
-        } catch (\Exception $e) {
-            $this->logError('sendQRCodeAsImage Exception: ' . $e->getMessage());
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Extrai URL do QR Code da variável {qr_code_url} (VERSÃO CORRIGIDA)
-     * 
-     * @param string $messagePart Parte da mensagem
-     * @return string URL extraída ou string vazia
-     */
-    private function extractQRCodeUrlFromVariable(string $messagePart): string
-    {
-        $this->logDebug('extractQRCodeUrlFromVariable', 'Analisando mensagem para QR Code', [
-            'full_message' => $messagePart
-        ]);
-        
-        // ✅ MÉTODO DIRETO: Procura por {qr_code_url} seguido de qualquer coisa e depois uma URL
-        if (preg_match('/\{qr_code_url\}(.*?)(https?:\/\/[^\s]+)/s', $messagePart, $matches)) {
-            $url = trim($matches[2]);
-            $this->logDebug('extractQRCodeUrlFromVariable', 'URL encontrada via regex', ['url' => $url]);
-            return $url;
-        }
-        
-        // ✅ MÉTODO ALTERNATIVO: Se não encontrou com regex, usa método simples
-        $startPos = strpos($messagePart, '{qr_code_url}');
-        if ($startPos !== false) {
-            $textAfterMarker = substr($messagePart, $startPos + strlen('{qr_code_url}'));
-            
-            // Procura por qualquer URL no texto após o marcador
-            if (preg_match('/https?:\/\/[^\s]+/i', $textAfterMarker, $matches)) {
-                $url = trim($matches[0]);
-                $this->logDebug('extractQRCodeUrlFromVariable', 'URL encontrada via método simples', ['url' => $url]);
-                return $url;
-            }
-        }
-        
-        $this->logDebug('extractQRCodeUrlFromVariable', 'Nenhuma URL encontrada após {qr_code_url}');
-        return '';
-    }
-
-    /**
-     * Envia imagem
-     * 
-     * @param string $phoneNumber Número de telefone
-     * @param string $imageUrl URL da imagem
-     * @param string $caption Legenda da imagem
-     * @return array Resultado do envio
-     */
-    public function sendImage(string $phoneNumber, string $imageUrl, string $caption = ''): array
-    {
-        try {
-            $validation = $this->validateSendParameters($phoneNumber, $caption, true);
-            if (!$validation['success']) {
-                return $validation;
-            }
-
-            // ✅ CORREÇÃO: Adiciona extensão .jpg se a URL não tiver extensão
-            $processedImageUrl = $this->ensureImageUrlHasExtension($imageUrl);
-            
-            $this->logDebug('sendImage', 'Processando URL da imagem', [
-                'original_url' => $imageUrl,
-                'processed_url' => $processedImageUrl
-            ]);
-
-            $payload = $this->buildMediaPayload($phoneNumber, $processedImageUrl, $caption, 'image');
-            
-            // Aplica sistema de tentativas para mídia também
-            return $this->sendWithRetry('/send', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Garante que a URL da imagem tenha uma extensão
-     * 
-     * @param string $imageUrl URL original
-     * @return string URL com extensão .jpg se necessário
-     */
-    private function ensureImageUrlHasExtension(string $imageUrl): string
-    {
-        // Remove parâmetros de query para verificar a extensão
-        $urlWithoutParams = strtok($imageUrl, '?');
-        
-        // Lista de extensões de imagem comuns
-        $imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
-        
-        // Verifica se a URL já tem uma extensão de imagem
-        foreach ($imageExtensions as $extension) {
-            if (stripos($urlWithoutParams, $extension) !== false) {
-                $this->logDebug('ensureImageUrlHasExtension', 'URL já tem extensão de imagem', [
-                    'url' => $imageUrl,
-                    'extension' => $extension
-                ]);
-                return $imageUrl; // Retorna original se já tem extensão
-            }
-        }
-        
-        // ✅ Se não tem extensão, adiciona .jpg
-        $processedUrl = $imageUrl . '.jpg';
-        
-        $this->logDebug('ensureImageUrlHasExtension', 'Extensão .jpg adicionada à URL', [
-            'original_url' => $imageUrl,
-            'processed_url' => $processedUrl
-        ]);
-        
-        return $processedUrl;
-    }
-
-    /**
-     * Envia arquivo/documento
-     * 
-     * @param string $phoneNumber Número de telefone
-     * @param string $fileUrl URL do arquivo
-     * @param string $filename Nome do arquivo
-     * @param string $caption Legenda do arquivo
-     * @return array Resultado do envio
-     */
-    public function sendFile(string $phoneNumber, string $fileUrl, string $filename, string $caption = ''): array
-    {
-        try {
-            $validation = $this->validateSendParameters($phoneNumber, $caption, true);
-            if (!$validation['success']) {
-                return $validation;
-            }
-
-            $payload = $this->buildMediaPayload($phoneNumber, $fileUrl, $caption, 'file');
-            $payload['filename'] = $filename;
-            
-            // Aplica sistema de tentativas
-            return $this->sendWithRetry('/send', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Envia mensagem para grupo
-     * 
-     * @param string $groupId ID do grupo
-     * @param string $message Mensagem a ser enviada
-     * @param string $type Tipo de mensagem (text/media)
-     * @param array $mediaOptions Opções de mídia (opcional)
-     * @return array Resultado do envio
-     */
-    public function sendGroupMessage(string $groupId, string $message, string $type = 'text', array $mediaOptions = []): array
-    {
-        try {
-            if (empty($groupId) || empty($message)) {
-                return [
-                    'success' => false,
-                    'error' => 'ID do grupo e mensagem são obrigatórios',
-                    'code' => 'MISSING_PARAMETERS'
-                ];
-            }
-
-            $payload = [
-                'group_id' => $groupId,
-                'type' => $type,
-                'message' => $message,
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'access_token' => $this->settings['zapcel_access_token']
-            ];
-
-            // Adiciona opções de mídia se for o caso
-            if ($type === 'media' && !empty($mediaOptions)) {
-                $payload['media_url'] = $mediaOptions['media_url'] ?? '';
-                $payload['filename'] = $mediaOptions['filename'] ?? '';
-            }
-
-            return $this->sendWithRetry('/send_group', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Cria uma nova instância
-     * 
-     * @return array Resultado da criação
-     */
-    public function createInstance(): array
-    {
-        try {
-            $payload = [
-                'access_token' => $this->settings['zapcel_access_token']
-            ];
-
-            return $this->makeApiRequest('/create_instance', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Obtém QR Code para login
-     * 
-     * @return array Resultado com QR Code
-     */
-    public function getQRCode(): array
-    {
-        try {
-            $payload = [
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'access_token' => $this->settings['zapcel_access_token']
-            ];
-
-            return $this->makeApiRequest('/get_qrcode', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Define webhook para recebimento de mensagens
-     * 
-     * @param string $webhookUrl URL do webhook
-     * @param bool $enable Habilitar/desabilitar
-     * @return array Resultado da configuração
-     */
-    public function setWebhook(string $webhookUrl, bool $enable = true): array
-    {
-        try {
-            $payload = [
-                'webhook_url' => $webhookUrl,
-                'enable' => $enable ? 'true' : 'false',
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'access_token' => $this->settings['zapcel_access_token']
-            ];
-
-            return $this->makeApiRequest('/set_webhook', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Reinicia a instância
-     * 
-     * @return array Resultado do reinício
-     */
-    public function rebootInstance(): array
-    {
-        try {
-            $payload = [
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'access_token' => $this->settings['zapcel_access_token']
-            ];
-
-            return $this->makeApiRequest('/reboot', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Reseta a instância (logout completo)
-     * 
-     * @return array Resultado do reset
-     */
-    public function resetInstance(): array
-    {
-        try {
-            $payload = [
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'access_token' => $this->settings['zapcel_access_token']
-            ];
-
-            return $this->makeApiRequest('/reset_instance', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Reconecta a instância
-     * 
-     * @return array Resultado da reconexão
-     */
-    public function reconnectInstance(): array
-    {
-        try {
-            $payload = [
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'access_token' => $this->settings['zapcel_access_token']
-            ];
-
-            return $this->makeApiRequest('/reconnect', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Obtém lista de grupos
-     * 
-     * @return array Lista de grupos
-     */
-    public function getGroups(): array
-    {
-        try {
-            $payload = [
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'access_token' => $this->settings['zapcel_access_token']
-            ];
-
-            return $this->makeApiRequest('/get_groups', $payload);
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Envia mensagem com botões
-     * 
-     * @param string $chatId ID do chat
-     * @param string $template Template dos botões
-     * @param string $type Tipo de mensagem
-     * @return array Resultado do envio
-     */
-    public function sendButtonMessage(string $chatId, string $template, string $type = '2'): array
-    {
-        try {
-            $payload = [
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'access_token' => $this->settings['zapcel_access_token'],
-                'chat_id' => $chatId,
-                'template' => $template,
-                'type' => $type
-            ];
-
-            // Endpoint específico para botões
-            return $this->makeApiRequest('/send_button_message', $payload, 'GET');
-            
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Verifica status da instância usando o endpoint set_webhook como teste de credenciais/status.
-     * 
-     * @return array Status da conexão
-     */
-    public function checkInstanceStatus(): array
-    {
-        try {
-            if (empty($this->settings['zapcel_instance_id']) || empty($this->settings['zapcel_access_token'])) {
-                return [
-                    'success' => false,
-                    'error' => 'Configurações incompletas',
-                    'code' => 'MISSING_CONFIG'
-                ];
-            }
-
-            // Usamos o endpoint set_webhook com enable=false e uma URL de teste
-            // para verificar se as credenciais são aceitas e se a instância está ativa.
-            $payload = [
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'access_token' => $this->settings['zapcel_access_token'],
-                'webhook_url' => 'https://webhook.site/e613a9a8-7c7b-4011-8ca0-21ec435afecb', // SUA URL AQUI
-                'enable' => 'false' // Não queremos alterar a configuração real
-            ];
-
-            // Chamada síncrona para o endpoint set_webhook
-            $result = $this->makeApiRequest('/set_webhook', $payload, 'GET' );
-            
-            // A API Zapcel retorna 'status: success' se a instância existe e está conectada.
-            if (($result['data']['status'] ?? '') === 'success') {
-                return [
-                    'success' => true,
-                    'data' => ['status' => 'connected'], // Simulamos o status 'connected' para o AdminDispatcher
-                    'http_code' => 200
-                ];
-            }
-            
-            // Se o status for 'error', extraímos a mensagem de erro. 
-            $errorMessage = 'Acesse o Zapcel e reconecte seu celular para continuar.'; 
-            //$result['data']['message'] ?? 'Erro desconhecido na API Zapcel.';
-            
-            return [
-                'success' => false,
-                'error' => $errorMessage,
-                'code' => 'API_ERROR',
-                'http_code' => $result['http_code'] ?? 0
-            ];
-            
-        } catch (\Exception $e ) {
-            return [
-                'success' => false,
-                'error' => 'Exception: ' . $e->getMessage(),
-                'code' => 'EXCEPTION'
-            ];
-        }
-    }
-
-    /**
-     * Envia com sistema de retry baseado nas configurações (ATUALIZADO para suportar mídia)
-     * 
-     * @param string $endpoint Endpoint da API
-     * @param array $payload Dados para envio
-     * @return array Resultado
-     */
-    private function sendWithRetry(string $endpoint, array $payload): array
-    {
-        $result = null;
-        
-        // ✅ AJUSTA TIMEOUT para mídia (imagens podem demorar mais)
-        $isMedia = isset($payload['type']) && ($payload['type'] === 'media' || $payload['type'] === 'image');
-        $timeout = $isMedia ? 60 : $this->timeout; // 60 segundos para mídia, 30 para texto
-        
-        for ($attempt = 1; $attempt <= $this->maxAttempts; $attempt++) {
-            $result = $this->makeApiRequest($endpoint, $payload, 'POST', $timeout);
-            
-            if ($result['success']) {
-                break; // Sucesso, sai do loop
-            }
-            
-            // Log de tentativa falha
-            $this->logDebug('sendWithRetry', 'Tentativa ' . $attempt . ' falhou', [
-                'attempt' => $attempt, 
-                'max_attempts' => $this->maxAttempts, 
-                'endpoint' => $endpoint,
-                'is_media' => $isMedia,
-                'error' => $result['error'] ?? 'Unknown error'
-            ]);
-            
-            // Se não é a última tentativa, aguarda antes de tentar novamente
-            if ($attempt < $this->maxAttempts) {
-                $retryDelay = $isMedia ? 3 : 2; // Delay maior para mídia
-                sleep($retryDelay);
-            }
-        }
-        
-        return $result;
-    }
-
-    /**
-     * Valida número de telefone
-     * 
-     * @param string $phoneNumber Número a ser validado
-     * @return array Resultado da validação
-     */
-    public function validatePhoneNumber(string $phoneNumber): array
-    {
-        // Remove todos os caracteres não numéricos exceto +
-        $cleanNumber = preg_replace('/[^\d+]/', '', $phoneNumber);
-        
-        // Verifica formato internacional básico
-        if (!preg_match('/^\+\d{1,3}\d{4,14}$/', $cleanNumber)) {
-            return [
-                'success' => false,
-                'error' => 'Formato de número inválido. Use: +5511999999999 (celular) ou +551130303030 (fixo)',
-                'code' => 'INVALID_FORMAT'
-            ];
-        }
-        
-        // Extrai código do país e número
-        $countryCode = substr($cleanNumber, 1, 2); // +55
-        $number = substr($cleanNumber, 3); // 11999999999 ou 1130303030
-        
-        // Validações específicas por país
-        switch ($countryCode) {
-            case '55': // Brasil
-                // Aceita tanto celular (11 dígitos) quanto fixo (10 dígitos)
-                if (strlen($number) === 11) {
-                    // Celular: deve começar com 9 após o DDD
-                    if (substr($number, 2, 1) !== '9') {
-                        return [
-                            'success' => false,
-                            'error' => 'Número de celular brasileiro inválido. Deve começar com 9 após o DDD. Formato: +5511999999999',
-                            'code' => 'INVALID_BRAZIL_MOBILE'
-                        ];
-                    }
-                } elseif (strlen($number) === 10) {
-                    // Fixo: deve começar com 2, 3, 4 ou 5 após o DDD
-                    $firstDigit = substr($number, 2, 1);
-                    if (!in_array($firstDigit, ['2', '3', '4', '5'])) {
-                        return [
-                            'success' => false,
-                            'error' => 'Número fixo brasileiro inválido. Deve começar com 2, 3, 4 ou 5 após o DDD. Formato: +551130303030',
-                            'code' => 'INVALID_BRAZIL_LANDLINE'
-                        ];
-                    }
-                } else {
-                    return [
-                        'success' => false,
-                        'error' => 'Número brasileiro inválido. Celular: 11 dígitos (+5511999999999), Fixo: 10 dígitos (+551130303030)',
-                        'code' => 'INVALID_BRAZIL_NUMBER'
-                    ];
-                }
-                break;
-                
-            case '1': // EUA/Canadá
-                if (strlen($number) !== 10) {
-                    return [
-                        'success' => false,
-                        'error' => 'Invalid US/Canada number. Format: +11234567890',
-                        'code' => 'INVALID_US_NUMBER'
-                    ];
-                }
-                break;
-                
-            // Adicione mais validações por país conforme necessário
-        }
-        
-        return [
-            'success' => true,
-            'clean_number' => $cleanNumber,
-            'country_code' => $countryCode,
-            'local_number' => $number
-        ];
-    }
-
-    /**
-     * Processa mensagem para envio com suporte a quebras manuais e detecção de QR Code
-     * 
-     * @param string $message Mensagem original
-     * @return array Partes da mensagem processadas
-     */
-    private function processMessageForSending(string $message): array
-    {
-        // Limpa cache de QR Codes
-        $this->qrCodeUrls = [];
-        
-        // PRIMEIRO: Verifica se há quebras manuais {quebrar_mensagem}
-        if (strpos($message, '{quebrar_mensagem}') !== false) {
-            $parts = explode('{quebrar_mensagem}', $message);
-            
-            // Processa cada parte
-            $processedParts = [];
-            foreach ($parts as $index => $part) {
-                $cleanPart = trim($part);
-                
-                // Remove outras variações do marcador
-                $cleanPart = str_replace(['{{quebrar_mensagem}}', '[quebrar_mensagem]'], '', $cleanPart);
-                
-                if (!empty($cleanPart)) {
-                    // ✅ CORREÇÃO CRÍTICA: Se esta parte contém {qr_code_url}, processa como QR Code
-                    if (strpos($cleanPart, '{qr_code_url}') !== false) {
-                        // ✅ EXTRAI a URL e marca esta parte como QR Code
-                        $qrCodeUrl = $this->extractQRCodeUrlFromVariable($cleanPart);
-                        if (!empty($qrCodeUrl)) {
-                            $this->qrCodeUrls[count($processedParts)] = $qrCodeUrl;
-                            $this->logDebug('processMessageForSending', 'QR Code identificado - parte será enviada como imagem', [
-                                'part_index' => count($processedParts),
-                                'qr_code_url' => $qrCodeUrl,
-                                'original_content' => substr($cleanPart, 0, 100) . '...'
-                            ]);
-                            
-                            // ✅ ADICIONA a parte processada (será enviada como imagem)
-                            $processedParts[] = $cleanPart;
-                        } else {
-                            // Se não encontrou URL, envia como texto normal
-                            $processedParts[] = $cleanPart;
-                        }
-                    } else {
-                        // Se a parte ainda for muito longa, quebra automaticamente
-                        if (strlen($cleanPart) > 1500) {
-                            $subParts = $this->splitLongMessage($cleanPart);
-                            $processedParts = array_merge($processedParts, $subParts);
-                        } else {
-                            $processedParts[] = $cleanPart;
-                        }
-                    }
-                }
-            }
-            
-            $this->logDebug('processMessageForSending', 'Mensagem processada com quebras manuais', [
-                'original_length' => strlen($message),
-                'manual_parts' => count($parts),
-                'final_parts' => count($processedParts),
-                'qr_codes_found' => count($this->qrCodeUrls)
-            ]);
-            
-            return $processedParts;
-        }
-        
-        // SEGUNDO: Quebra automática se a mensagem for muito longa
-        if (strlen($message) > 1500) {
-            $autoParts = $this->splitLongMessage($message);
-            
-            $this->logDebug('processMessageForSending', 'Mensagem quebrada automaticamente', [
-                'original_length' => strlen($message),
-                'auto_parts' => count($autoParts)
-            ]);
-            
-            return $autoParts;
-        }
-        
-        // TERCEIRO: Mensagem curta, envia como está
-        return [trim($message)];
-    }
-
-    /**
-     * Divide mensagens longas em partes menores
-     * 
-     * @param string $message Mensagem longa
-     * @param int $maxLength Tamanho máximo por parte
-     * @return array Partes da mensagem
-     */
-    private function splitLongMessage(string $message, int $maxLength = 1500): array
-    {
-        $parts = [];
-        $lines = explode("\n", $message);
-        $currentPart = '';
-        
-        foreach ($lines as $line) {
-            // Se adicionar esta linha exceder o limite, inicia nova parte
-            if (strlen($currentPart) + strlen($line) + 1 > $maxLength) {
-                if (!empty($currentPart)) {
-                    $parts[] = trim($currentPart);
-                    $currentPart = '';
-                }
-                
-                // Se uma linha individual é muito longa, quebra ela
-                if (strlen($line) > $maxLength) {
-                    $chunks = str_split($line, $maxLength - 100);
-                    foreach ($chunks as $chunk) {
-                        $parts[] = trim($chunk);
-                    }
-                    continue;
-                }
-            }
-            
-            $currentPart .= $line . "\n";
-        }
-        
-        // Adiciona a última parte se não estiver vazia
-        if (!empty(trim($currentPart))) {
-            $parts[] = trim($currentPart);
-        }
-        
-        return $parts;
-    }
-
-    /**
-     * Valida parâmetros básicos para envio
-     * 
-     * @param string $phoneNumber Número de telefone
-     * @param string $message Mensagem
-     * @param bool $allowEmptyMessage Permite mensagem vazia para mídia
-     * @return array Resultado da validação
-     */
-    private function validateSendParameters(string $phoneNumber, string $message, bool $allowEmptyMessage = false): array
-    {
-        // Verifica se o módulo está habilitado
-        if (!$this->settings['zapcel_enabled']) {
-            return [
-                'success' => false,
-                'error' => 'Módulo Zapcel desativado',
-                'code' => 'MODULE_DISABLED'
-            ];
-        }
-
-        // Verifica configurações da API
-        if (empty($this->settings['zapcel_instance_id']) || empty($this->settings['zapcel_access_token'])) {
-            return [
-                'success' => false,
-                'error' => 'Configurações da API incompletas',
-                'code' => 'MISSING_API_CONFIG'
-            ];
-        }
-
-        // Valida número de telefone
-        $phoneValidation = $this->validatePhoneNumber($phoneNumber);
-        if (!$phoneValidation['success']) {
-            return $phoneValidation;
-        }
-
-        // Valida mensagem (se aplicável)
-        if (!$allowEmptyMessage && empty(trim($message))) {
-            return [
-                'success' => false,
-                'error' => 'Mensagem não pode estar vazia',
-                'code' => 'EMPTY_MESSAGE'
-            ];
-        }
-
-        return ['success' => true];
-    }
-
-    /**
-     * Constrói payload para mensagem de texto
-     * 
-     * @param string $phoneNumber Número de telefone
-     * @param string $message Mensagem
-     * @return array Payload para API
-     */
-    private function buildTextPayload(string $phoneNumber, string $message): array
-    {
-        return [
-            'number' => $this->validatePhoneNumber($phoneNumber)['clean_number'],
-            'type' => 'text',
-            'message' => $message,
-            'instance_id' => $this->settings['zapcel_instance_id'],
-            'access_token' => $this->settings['zapcel_access_token']
-        ];
-    }
-
-    /**
-     * Constrói payload para mídia
-     * 
-     * @param string $phoneNumber Número de telefone
-     * @param string $mediaUrl URL da mídia
-     * @param string $caption Legenda
-     * @param string $mediaType Tipo de mídia
-     * @return array Payload para API
-     */
-    private function buildMediaPayload(string $phoneNumber, string $mediaUrl, string $caption, string $mediaType): array
-    {
-        $payload = [
-            'number' => $this->validatePhoneNumber($phoneNumber)['clean_number'],
-            'type' => 'media',
-            'media_url' => $mediaUrl,
-            'message' => $caption,
-            'instance_id' => $this->settings['zapcel_instance_id'],
-            'access_token' => $this->settings['zapcel_access_token']
-        ];
-
-        // ✅ Para imagens, força o tipo como image
-        if ($mediaType === 'image') {
-            $payload['type'] = 'image';
-        }
-        // Para arquivos, podemos especificar o tipo
-        else if ($mediaType === 'file') {
-            $payload['type'] = 'document';
-        }
-
-        return $payload;
-    }
-
-    /**
-     * Faz requisição para a API (ATUALIZADO com timeout customizável)
-     * 
-     * @param string $endpoint Endpoint da API
-     * @param array $payload Dados da requisição
-     * @param string $method Método HTTP
-     * @param int $timeout Timeout personalizado
-     * @return array Resposta da API
-     */
-    private function makeApiRequest(string $endpoint, array $payload, string $method = 'POST', int $timeout = null): array
-    {
-        $url = $this->apiBaseUrl . $endpoint;
-        
-        // Usa timeout personalizado ou padrão
-        $timeout = $timeout ?? $this->timeout;
-        
-        // Prepara os dados para envio
-        $postData = http_build_query($payload);
-        
-        // Configura cURL
-        $ch = curl_init();
-        
-        if ($method === 'GET') {
-            $url .= '?' . $postData;
-        }
-        
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $url,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => $timeout,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_SSL_VERIFYHOST => false,
-            CURLOPT_HTTPHEADER => $this->defaultHeaders,
-        ]);
-        
-        if ($method === 'POST') {
-            curl_setopt_array($ch, [
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $postData,
-            ]);
-        }
-        
-        // Executa a requisição
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-        curl_close($ch);
-        
-        // Processa a resposta
-        return $this->processApiResponse($response, $httpCode, $error, $payload);
-    }
-
-    /**
-     * Processa a resposta da API
-     * 
-     * @param mixed $response Resposta bruta
-     * @param int $httpCode Código HTTP
-     * @param string $error Erro cURL
-     * @param array $payload Payload original
-     * @return array Resposta processada
-     */
-    private function processApiResponse($response, int $httpCode, string $error, array $payload): array
-    {
-        // Verifica erros de conexão
-        if (!empty($error)) {
-            return [
-                'success' => false,
-                'error' => 'Erro de conexão: ' . $error,
-                'code' => 'CURL_ERROR',
-                'http_code' => $httpCode
-            ];
-        }
-        
-        // Tenta decodificar JSON
-        $decodedResponse = json_decode($response, true);
-        
-        if ($httpCode === 200) {
-            if (is_array($decodedResponse)) {
-                // Resposta bem-sucedida da API
-                return [
-                    'success' => true,
-                    'data' => $decodedResponse,
-                    'http_code' => $httpCode,
-                    'message_id' => $decodedResponse['id'] ?? null
-                ];
-            } else {
-                // Resposta não-JSON mas com código 200
-                return [
-                    'success' => true,
-                    'raw_response' => $response,
-                    'http_code' => $httpCode
-                ];
-            }
-        } else {
-            // Erro HTTP
-            $errorMessage = $this->getErrorMessageFromCode($httpCode);
-            
-            if (is_array($decodedResponse)) {
-                $errorMessage = $decodedResponse['error'] ?? $decodedResponse['message'] ?? $errorMessage;
-            }
-            
-            return [
-                'success' => false,
-                'error' => $errorMessage,
-                'code' => 'HTTP_' . $httpCode,
-                'http_code' => $httpCode,
-                'api_response' => $decodedResponse
-            ];
-        }
-    }
-
-    /**
-     * Obtém mensagem de erro amigável baseada no código HTTP
-     * 
-     * @param int $httpCode Código HTTP
-     * @return string Mensagem de erro
-     */
-    private function getErrorMessageFromCode(int $httpCode): string
-    {
-        $errors = [
-            400 => 'Requisição inválida para a API',
-            401 => 'Token de acesso inválido ou expirado',
-            403 => 'Acesso negado à instância',
-            404 => 'Instância não encontrada',
-            429 => 'Limite de requisições excedido',
-            500 => 'Erro interno do servidor Zapcel',
-            502 => 'Serviço temporariamente indisponível',
-            503 => 'Serviço em manutenção'
-        ];
-        
-        return $errors[$httpCode] ?? "Erro HTTP {$httpCode}";
-    }
-
-    /**
-     * Verifica se a instância está conectada
-     * 
-     * @return bool True se conectada
-     */
-    public function isInstanceConnected(): bool
-    {
-        $status = $this->checkInstanceStatus();
-        return $status['success'] && ($status['status'] ?? '') === 'connected';
-    }
-
-    /**
-     * Obtém informações da instância
-     * 
-     * @return array Informações da instância
-     */
-    public function getInstanceInfo(): array
-    {
-        $status = $this->checkInstanceStatus();
-        
-        if (!$status['success']) {
-            return $status;
-        }
-        
-        return [
-            'success' => true,
-            'instance' => [
-                'status' => $status['status'] ?? 'unknown',
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'connected' => ($status['status'] ?? '') === 'connected'
-            ]
-        ];
-    }
-
-    /**
-     * Obtém estatísticas de uso (método auxiliar)
-     * 
-     * @return array Estatísticas básicas
-     */
-    public function getUsageInfo(): array
-    {
-        return [
-            'success' => true,
-            'usage' => [
-                'max_attempts' => $this->maxAttempts,
-                'message_delay' => $this->messageDelay,
-                'instance_id' => $this->settings['zapcel_instance_id'],
-                'module_enabled' => $this->settings['zapcel_enabled'] ?? false
-            ]
-        ];
-    }
-
-    /**
-     * Log de debug
-     * 
-     * @param string $context Contexto do log
-     * @param string $message Mensagem de debug
-     * @param array $data Dados adicionais
-     * @return void
-     */
-    private function logDebug(string $context, string $message, array $data = []): void
-    {
-        if (function_exists('zapcel_log_debug')) {
-            zapcel_log_debug($context, $message, $data);
-        }
-    }
-
-    /**
-     * Log de erro
-     * 
-     * @param string $message Mensagem de erro
-     * @return void
-     */
-    private function logError(string $message): void
-    {
-        if (function_exists('zapcel_log_error')) {
-            zapcel_log_error($message);
-        }
-        
-        // Fallback para error_log se a função não existir
-        error_log("Zapcel WhatsAppAPI: " . $message);
-    }
-}
+?>
+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
