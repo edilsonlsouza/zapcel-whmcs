@@ -8,7 +8,7 @@
 
 **Versão:** 2.1.1  
 **Autor:** Hostcel  
-**Última Atualização:** Novembro 2025  
+**Última Atualização:** Abril 2026 
 **Licença:** Gratuita (requer API Zapcel - serviço pago)
 
 ---
