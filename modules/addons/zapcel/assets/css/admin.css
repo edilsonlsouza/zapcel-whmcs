@@ -650,6 +650,44 @@
     box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
 }
 
+/*campanhas*/
+
+/* ===== ZAPCEL – CAMPANHAS ===== */
+.zapcel-campaigns .badge-status-draft {
+    background-color: #6c757d;
+}
+
+.zapcel-campaigns .badge-status-active {
+    background-color: #28a745;
+}
+
+.zapcel-campaigns .badge-status-paused {
+    background-color: #ffc107;
+    color: #000;
+}
+
+.zapcel-campaigns .badge-status-finished {
+    background-color: #17a2b8;
+}
+
+.zapcel-campaigns .badge-status-scheduled {
+    background-color: #007bff;
+}
+
+/* contadores */
+.zapcel-campaigns .badge-sent {
+    background-color: #28a745;
+}
+
+.zapcel-campaigns .badge-pending {
+    background-color: #ffc107;
+    color: #000;
+}
+
+.zapcel-campaigns .badge-failed {
+    background-color: #dc3545;
+}
+
 /* Dark Mode Support */
 @media (prefers-color-scheme: dark) {
     .zapcel-admin-container {

@@ -1,102 +1,112 @@
-<?php //00507
-// 14.0 81
-if(!extension_loaded('ionCube Loader')){$__oc=strtolower(substr(php_uname(),0,3));$__ln='ioncube_loader_'.$__oc.'_'.substr(phpversion(),0,3).(($__oc=='win')?'.dll':'.so');if(function_exists('dl')){@dl($__ln);}if(function_exists('_il_exec')){return _il_exec();}$__ln='/ioncube/'.$__ln;$__oid=$__id=realpath(ini_get('extension_dir'));$__here=dirname(__FILE__);if(strlen($__id)>1&&$__id[1]==':'){$__id=str_replace('\\','/',substr($__id,2));$__here=str_replace('\\','/',substr($__here,2));}$__rd=str_repeat('/..',substr_count($__id,'/')).$__here.'/';$__i=strlen($__rd);while($__i--){if($__rd[$__i]=='/'){$__lp=substr($__rd,0,$__i).$__ln;if(file_exists($__oid.$__lp)){$__ln=$__lp;break;}}}if(function_exists('dl')){@dl($__ln);}}else{die('The file '.__FILE__." is corrupted.\n");}if(function_exists('_il_exec')){return _il_exec();}echo("Site error: the ".(php_sapi_name()=='cli'?'ionCube':'<a href="http://www.ioncube.com">ionCube</a>')." PHP Loader needs to be installed. This is a widely used PHP extension for running ionCube protected PHP code, website security and malware blocking.\n\nPlease visit ".(php_sapi_name()=='cli'?'get-loader.ioncube.com':'<a href="http://get-loader.ioncube.com">get-loader.ioncube.com</a>')." for install assistance.\n\n");exit(199);
+<?php
+namespace WHMCS\Module\Addon\Zapcel\Gateways;
 
-?>
-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
-xdqTQudZbbfk0SJrnBZW3moe
+// SE A INTERFACE NÃO EXISTIR, CARREGA
+if (!interface_exists('WHMCS\Module\Addon\Zapcel\Gateways\GatewayInterface')) {
+    require_once __DIR__ . '/GatewayInterface.php';
+}
+
+use WHMCS\Database\Capsule;
+
+abstract class AbstractGateway implements GatewayInterface
+{
+    protected $config;
+
+    public function __construct()
+    {
+        $this->loadConfig();
+    }
+
+    protected function loadConfig(): void
+    {
+        $config = Capsule::table('mod_zapcel_gateways')
+            ->where('gateway_name', $this->getGatewayId())
+            ->first();
+
+        if ($config) {
+            $this->config = json_decode($config->config, true) ?? [];
+        } else {
+            $this->config = [];
+        }
+    }
+
+    public function saveConfig(array $config): bool
+    {
+        try {
+            $existing = Capsule::table('mod_zapcel_gateways')
+                ->where('gateway_name', $this->getGatewayId())
+                ->first();
+
+            $data = [
+                'gateway' => $this->getGatewayId(),
+                'name' => $this->getGatewayName(),
+                'config' => json_encode($config),
+                'active' => $config['active'] ?? false,
+                'updated_at' => date('Y-m-d H:i:s')
+            ];
+
+            if ($existing) {
+                Capsule::table('mod_zapcel_gateways')
+                    ->where('gateway_name', $this->getGatewayId())
+                    ->update($data);
+            } else {
+                $data['created_at'] = date('Y-m-d H:i:s');
+                Capsule::table('mod_zapcel_gateways')
+                    ->insert($data);
+            }
+
+            $this->config = $config;
+            return true;
+
+        } catch (\Exception $e) {
+            $this->logError('Erro ao salvar configurações: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function getConfig(): array
+    {
+        return $this->config;
+    }
+
+    public function isConfigured(): bool
+    {
+        $requiredFields = $this->getRequiredConfigFields();
+        
+        foreach ($requiredFields as $field) {
+            if (empty($this->config[$field])) {
+                return false;
+            }
+        }
+
+        return !empty($this->config['active']);
+    }
+
+    abstract protected function getRequiredConfigFields(): array;
+
+    // Métodos de log (já existentes no seu código)
+    protected function logAction(string $action, string $message, array $details = [], string $status = 'info'): void
+    {
+        try {
+            Capsule::table('mod_zapcel_logs')->insert([
+                'type' => 'gateway_' . $this->getGatewayId() . '_' . $action,
+                'message' => $message,
+                'details' => json_encode(array_merge($details, ['gateway' => $this->getGatewayId()])),
+                'status' => $status,
+                'created_at' => date('Y-m-d H:i:s')
+            ]);
+        } catch (\Exception $e) {
+            // Falha silenciosa
+        }
+    }
+
+    protected function logError(string $message, array $details = []): void
+    {
+        $this->logAction('error', $message, $details, 'error');
+    }
+
+    protected function logSuccess(string $message, array $details = []): void
+    {
+        $this->logAction('success', $message, $details, 'success');
+    }
+}
